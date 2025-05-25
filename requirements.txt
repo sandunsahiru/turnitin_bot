@@ -1,0 +1,5 @@
+playwright
+pyTelegramBotAPI
+python-dotenv
+python-telegram-bot
+requests

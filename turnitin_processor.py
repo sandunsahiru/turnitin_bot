@@ -787,20 +787,17 @@ def process_turnitin(file_path: str, chat_id: int, bot):
                 log(f"  Words: {word_count}")
                 log(f"  Characters: {character_count}")
                 
-                # Send metadata to user
-                metadata_msg = f"""📋 <b>Document Upload Verified</b>
+                # Send simplified metadata to user (only essential info)
+                metadata_msg = f"""✅ <b>Document Verified</b>
 
-📄 <b>File:</b> {filename}
-📊 <b>Size:</b> {filesize}
 📃 <b>Pages:</b> {page_count}
 🔤 <b>Words:</b> {word_count}
 🔢 <b>Characters:</b> {character_count}
-📝 <b>Title:</b> {actual_submission_title}
 
-✅ Ready to submit to Turnitin..."""
+🚀 Submitting to Turnitin..."""
                 
-                bot.send_message(chat_id, metadata_msg)
-                processing_messages.append(bot.send_message(chat_id, metadata_msg).message_id)
+                verification_msg = bot.send_message(chat_id, metadata_msg)
+                processing_messages.append(verification_msg.message_id)
                 
                 # Update our submission title to match what Turnitin assigned
                 submission_title = actual_submission_title
@@ -809,7 +806,8 @@ def process_turnitin(file_path: str, chat_id: int, bot):
             except Exception as metadata_error:
                 log(f"Error extracting metadata: {metadata_error}")
                 # Continue anyway, but warn user
-                bot.send_message(chat_id, "⚠️ Could not verify upload details, but proceeding with submission...")
+                warning_msg = bot.send_message(chat_id, "⚠️ Could not verify upload details, but proceeding with submission...")
+                processing_messages.append(warning_msg.message_id)
 
             log("Clicking Confirm button...")
             try:

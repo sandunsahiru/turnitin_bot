@@ -2,3 +2,5 @@
 .env
 subscriptions.json
 pending_requests.json
+cookies.json
+__pycache__/turnitin_processor.cpython-312.pyc

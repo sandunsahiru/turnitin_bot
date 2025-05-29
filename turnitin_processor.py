@@ -10,6 +10,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 load_dotenv()
 TURNITIN_EMAIL = os.getenv("TURNITIN_EMAIL")
 TURNITIN_PASSWORD = os.getenv("TURNITIN_PASSWORD")
+ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "0"))  # For debug screenshots
 
 def log(message: str):
     """Log a message with a timestamp to the terminal."""
@@ -756,11 +757,59 @@ def process_turnitin(file_path: str, chat_id: int, bot):
             except:
                 log("Privacy notice not found, continuing...")
 
-            # Wait before confirming as requested
+            # Wait before confirming and verify upload details
             log("Waiting 10 seconds before confirming document...")
-            msg = bot.send_message(chat_id, "📤 Document uploaded, confirming submission...")
+            msg = bot.send_message(chat_id, "📤 Document uploaded, verifying details...")
             processing_messages.append(msg.message_id)
             page.wait_for_timeout(10000)
+
+            # Extract and verify submission metadata before confirming
+            try:
+                log("Extracting submission metadata...")
+                
+                # Get submission details
+                author = page.locator("#submission-metadata-author").inner_text()
+                assignment_title = page.locator("#submission-metadata-assignment").inner_text()
+                actual_submission_title = page.locator("#submission-metadata-title").inner_text()
+                filename = page.locator("#submission-metadata-filename").inner_text()
+                filesize = page.locator("#submission-metadata-filesize").inner_text()
+                page_count = page.locator("#submission-metadata-pagecount").inner_text()
+                word_count = page.locator("#submission-metadata-wordcount").inner_text()
+                character_count = page.locator("#submission-metadata-charactercount").inner_text()
+                
+                log(f"Submission metadata extracted:")
+                log(f"  Author: {author}")
+                log(f"  Assignment: {assignment_title}")
+                log(f"  Title: {actual_submission_title}")
+                log(f"  Filename: {filename}")
+                log(f"  Size: {filesize}")
+                log(f"  Pages: {page_count}")
+                log(f"  Words: {word_count}")
+                log(f"  Characters: {character_count}")
+                
+                # Send metadata to user
+                metadata_msg = f"""📋 <b>Document Upload Verified</b>
+
+📄 <b>File:</b> {filename}
+📊 <b>Size:</b> {filesize}
+📃 <b>Pages:</b> {page_count}
+🔤 <b>Words:</b> {word_count}
+🔢 <b>Characters:</b> {character_count}
+📝 <b>Title:</b> {actual_submission_title}
+
+✅ Ready to submit to Turnitin..."""
+                
+                bot.send_message(chat_id, metadata_msg)
+                processing_messages.append(bot.send_message(chat_id, metadata_msg).message_id)
+                
+                # Update our submission title to match what Turnitin assigned
+                submission_title = actual_submission_title
+                log(f"Updated submission title to: {submission_title}")
+                
+            except Exception as metadata_error:
+                log(f"Error extracting metadata: {metadata_error}")
+                # Continue anyway, but warn user
+                bot.send_message(chat_id, "⚠️ Could not verify upload details, but proceeding with submission...")
 
             log("Clicking Confirm button...")
             try:
@@ -815,146 +864,222 @@ def process_turnitin(file_path: str, chat_id: int, bot):
                     log(f"Direct navigation also failed: {direct_nav_error}")
                     raise Exception("Cannot navigate to Quick Submit to find submission")
 
-            # Look for our submission - UPDATED TO FIND BY USER ID FIRST
+            # Look for our submission - UPDATED TO USE ACTUAL SUBMISSION TITLE
             log(f"Looking for submission with title: {submission_title}")
             submission_found = False
             page1 = None
 
-            # Method 1: Try to find by exact name pattern with User ID
+            # Method 1: Try to find by the actual submission title from Turnitin
             try:
                 log("Method 1: Looking for Test User cell...")
                 page.get_by_role("cell", name="Test User Test User").click()
                 random_wait(2, 3)
                 
-                log("Method 1: Looking for submission title link with User ID...")
+                log(f"Method 1: Looking for submission title link: {submission_title}")
                 with page.expect_popup() as page1_info:
                     page.get_by_role("link", name=submission_title).click()
                 page1 = page1_info.value
                 random_wait(3, 5)
                 submission_found = True
-                log("Found submission using Method 1 with User ID")
+                log("Found submission using Method 1 with actual title")
                 
             except Exception as e1:
                 log(f"Method 1 failed: {e1}")
 
-            # Method 2: Try alternative patterns with User ID
+            # Method 2: Try finding by partial title match
             if not submission_found:
                 try:
                     log("Method 2: Looking for any cell containing 'Test User'...")
-                    # Look for any cell containing "Test User"
                     cells = page.locator('td:has-text("Test User")').all()
                     if cells:
                         log(f"Found {len(cells)} cells with Test User")
                         cells[0].click()
                         random_wait(2, 3)
                         
-                        # Look for our submission title with User ID
-                        links = page.locator(f'a:has-text("{submission_title}")').all()
-                        if links:
-                            log(f"Found {len(links)} links with User ID submission title")
-                            with page.expect_popup() as page1_info:
-                                links[0].click()
-                            page1 = page1_info.value
-                            random_wait(3, 5)
-                            submission_found = True
-                            log("Found submission using Method 2 with User ID")
-                        else:
-                            # Try finding by user ID pattern in the link text
-                            user_links = page.locator(f'a:has-text("User_{chat_id}")').all()
-                            if user_links:
-                                log(f"Found {len(user_links)} links with User ID pattern")
-                                with page.expect_popup() as page1_info:
-                                    user_links[0].click()
-                                page1 = page1_info.value
-                                random_wait(3, 5)
-                                submission_found = True
-                                log("Found submission using User ID pattern in Method 2")
-                except Exception as e2:
-                    log(f"Method 2 failed: {e2}")
-
-            # Method 3: Look for the most recent submission with User ID
-            if not submission_found:
-                try:
-                    log("Method 3: Looking for most recent submission with User ID...")
-                    # Get all submission links and look for ones with our user ID
-                    submission_links = page.locator('a[href*="submissions"]').all()
-                    if submission_links:
-                        log(f"Found {len(submission_links)} submission links")
-                        # Try to find one that contains our user ID
-                        for link in submission_links:
+                        # Look for our submission title (try partial matches)
+                        title_parts = submission_title.split()
+                        for part in title_parts:
+                            if len(part) > 3:  # Only try meaningful parts
+                                try:
+                                    log(f"Trying to find link with text part: {part}")
+                                    links = page.locator(f'a:has-text("{part}")').all()
+                                    if links:
+                                        log(f"Found {len(links)} links with title part: {part}")
+                                        with page.expect_popup() as page1_info:
+                                            links[0].click()
+                                        page1 = page1_info.value
+                                        random_wait(3, 5)
+                                        submission_found = True
+                                        log(f"Found submission using Method 2 with title part: {part}")
+                                        break
+                                except Exception as part_error:
+                                    log(f"Title part {part} search failed: {part_error}")
+                                    continue
+                        
+                        # If partial match didn't work, try full title
+                        if not submission_found:
                             try:
-                                link_text = link.inner_text()
-                                if f"User_{chat_id}" in link_text:
-                                    log(f"Found link with User ID: {link_text}")
+                                links = page.locator(f'a:has-text("{submission_title}")').all()
+                                if links:
+                                    log(f"Found {len(links)} links with full submission title")
                                     with page.expect_popup() as page1_info:
-                                        link.click()
+                                        links[0].click()
                                     page1 = page1_info.value
                                     random_wait(3, 5)
                                     submission_found = True
-                                    log("Found submission using Method 3 with User ID")
-                                    break
-                            except Exception as link_error:
-                                log(f"Error checking link text: {link_error}")
-                                continue
+                                    log("Found submission using Method 2 with full title")
+                            except Exception as full_title_error:
+                                log(f"Full title search failed: {full_title_error}")
                         
-                        # If no User ID found, try the first link as fallback
-                        if not submission_found:
-                            log("No User ID found in links, trying first submission as fallback...")
-                            with page.expect_popup() as page1_info:
-                                submission_links[0].click()
-                            page1 = page1_info.value
-                            random_wait(3, 5)
-                            submission_found = True
-                            log("Found submission using Method 3 fallback")
-                except Exception as e3:
-                    log(f"Method 3 failed: {e3}")
+                except Exception as e2:
+                    log(f"Method 2 failed: {e2}")
 
-            # Method 4: Try looking by timestamp pattern with User ID
+            # Method 3: Look for the most recent submission by timestamp
             if not submission_found:
                 try:
-                    log("Method 4: Looking by User ID and timestamp pattern...")
-                    # Look for any link that contains our user ID and timestamp
-                    user_timestamp_links = page.locator(f'a:has-text("User_{chat_id}_Document_{timestamp[:8]}")').all()  # Use date part of timestamp
-                    if user_timestamp_links:
-                        log(f"Found {len(user_timestamp_links)} links with User ID and timestamp pattern")
+                    log("Method 3: Looking for most recent submission by timestamp...")
+                    # Get all submission links
+                    submission_links = page.locator('a[href*="submissions"]').all()
+                    if submission_links:
+                        log(f"Found {len(submission_links)} submission links")
+                        # Try to find the most recent one (should be first in list)
                         with page.expect_popup() as page1_info:
-                            user_timestamp_links[0].click()
+                            submission_links[0].click()
                         page1 = page1_info.value
                         random_wait(3, 5)
                         submission_found = True
-                        log("Found submission using Method 4 with User ID and timestamp")
-                    else:
-                        # Try just User ID pattern
-                        user_links = page.locator(f'a:has-text("User_{chat_id}")').all()
-                        if user_links:
-                            log(f"Found {len(user_links)} links with User ID pattern")
-                            with page.expect_popup() as page1_info:
-                                user_links[0].click()
-                            page1 = page1_info.value
-                            random_wait(3, 5)
-                            submission_found = True
-                            log("Found submission using Method 4 with User ID only")
+                        log("Found submission using Method 3 (most recent)")
+                except Exception as e3:
+                    log(f"Method 3 failed: {e3}")
+
+            # Method 4: Try searching by uploaded filename
+            if not submission_found:
+                try:
+                    log("Method 4: Looking by uploaded filename...")
+                    original_name = os.path.basename(file_path)
+                    base_name = os.path.splitext(original_name)[0]  # Remove extension
+                    
+                    # Try finding by filename parts
+                    filename_links = page.locator(f'a:has-text("{base_name}")').all()
+                    if filename_links:
+                        log(f"Found {len(filename_links)} links with filename pattern")
+                        with page.expect_popup() as page1_info:
+                            filename_links[0].click()
+                        page1 = page1_info.value
+                        random_wait(3, 5)
+                        submission_found = True
+                        log("Found submission using Method 4 with filename")
                 except Exception as e4:
                     log(f"Method 4 failed: {e4}")
 
+            # Method 5: Try by table row approach - click on any row with "Test User"
             if not submission_found:
-                # List all available links for debugging
                 try:
-                    log("Debugging: Listing all available links...")
+                    log("Method 5: Looking for table rows with Test User...")
+                    # Find table rows that contain "Test User"
+                    rows = page.locator('tr:has-text("Test User")').all()
+                    if rows:
+                        log(f"Found {len(rows)} rows with Test User")
+                        for i, row in enumerate(rows):
+                            try:
+                                log(f"Trying row {i+1}...")
+                                # Look for a link in this row
+                                row_links = row.locator('a[href*="submissions"]').all()
+                                if row_links:
+                                    log(f"Found {len(row_links)} submission links in row {i+1}")
+                                    with page.expect_popup() as page1_info:
+                                        row_links[0].click()
+                                    page1 = page1_info.value
+                                    random_wait(3, 5)
+                                    submission_found = True
+                                    log(f"Found submission using Method 5, row {i+1}")
+                                    break
+                            except Exception as row_error:
+                                log(f"Row {i+1} failed: {row_error}")
+                                continue
+                except Exception as e5:
+                    log(f"Method 5 failed: {e5}")
+
+            if not submission_found:
+                # Enhanced debugging with more detailed information
+                try:
+                    log("Debugging: Comprehensive link and content analysis...")
+                    
+                    # Check if we're on the right page
+                    current_url = page.url
+                    page_title = page.title()
+                    log(f"Current page URL: {current_url}")
+                    log(f"Current page title: {page_title}")
+                    
+                    # Look for all table elements that might contain submissions
+                    tables = page.locator('table').all()
+                    log(f"Found {len(tables)} tables on page")
+                    
+                    # Look for all cells containing "Test User"
+                    test_user_cells = page.locator('td:has-text("Test User")').all()
+                    log(f"Found {len(test_user_cells)} cells with 'Test User'")
+                    
+                    # Get more detailed link information
                     all_links = page.locator('a').all()
                     log(f"Found {len(all_links)} total links on page")
                     
-                    for i, link in enumerate(all_links[:10]):  # Show first 10 links
+                    submission_links = []
+                    for i, link in enumerate(all_links[:20]):  # Check first 20 links
                         try:
-                            link_text = link.inner_text()[:50]  # First 50 chars
+                            link_text = link.inner_text()[:100]  # First 100 chars
                             link_href = link.get_attribute('href') or 'No href'
-                            log(f"Link {i+1}: '{link_text}' -> {link_href}")
-                        except:
-                            pass
+                            
+                            # Check if this might be a submission link
+                            if any(keyword in link_href.lower() for keyword in ['submission', 'view', 'paper']):
+                                submission_links.append((i+1, link_text, link_href))
+                                log(f"Potential submission link {i+1}: '{link_text}' -> {link_href}")
+                            elif 'Test User' in link_text or any(word in link_text.lower() for word in ['project', 'document', 'paper', submission_title.lower()]):
+                                log(f"Relevant link {i+1}: '{link_text}' -> {link_href}")
+                        except Exception as link_debug_error:
+                            log(f"Error analyzing link {i+1}: {link_debug_error}")
+                            continue
+                    
+                    log(f"Found {len(submission_links)} potential submission links")
+                    
+                    # Try clicking the first potential submission link if any found
+                    if submission_links:
+                        try:
+                            log(f"Attempting to click first potential submission link...")
+                            link_index = submission_links[0][0] - 1  # Convert back to 0-based index
+                            with page.expect_popup() as page1_info:
+                                all_links[link_index].click()
+                            page1 = page1_info.value
+                            random_wait(3, 5)
+                            submission_found = True
+                            log("Found submission using debugging method with potential link")
+                        except Exception as debug_click_error:
+                            log(f"Debug click failed: {debug_click_error}")
+                    
                 except Exception as debug_error:
-                    log(f"Debug listing failed: {debug_error}")
+                    log(f"Enhanced debugging failed: {debug_error}")
                 
-                raise Exception("Could not find the submitted document using any method")
+                if not submission_found:
+                    # Last resort: take a screenshot for manual debugging
+                    try:
+                        screenshot_path = f"debug_screenshot_{chat_id}_{timestamp}.png"
+                        page.screenshot(path=screenshot_path)
+                        log(f"Screenshot saved for debugging: {screenshot_path}")
+                        
+                        # Send screenshot to admin for debugging
+                        try:
+                            with open(screenshot_path, "rb") as screenshot_file:
+                                bot.send_photo(
+                                    ADMIN_TELEGRAM_ID, 
+                                    screenshot_file, 
+                                    caption=f"Debug Screenshot - User {chat_id} - Could not find submission"
+                                )
+                            os.remove(screenshot_path)  # Clean up screenshot
+                        except Exception as screenshot_send_error:
+                            log(f"Could not send debug screenshot: {screenshot_send_error}")
+                    except Exception as screenshot_error:
+                        log(f"Could not take debug screenshot: {screenshot_error}")
+                    
+                    raise Exception(f"Could not find the submitted document using any method. Title was: {submission_title}")
 
             # Ensure downloads folder exists
             downloads_dir = "downloads"

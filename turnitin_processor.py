@@ -767,15 +767,83 @@ def process_turnitin(file_path: str, chat_id: int, bot):
             try:
                 log("Extracting submission metadata...")
                 
-                # Get submission details
-                author = page.locator("#submission-metadata-author").inner_text()
-                assignment_title = page.locator("#submission-metadata-assignment").inner_text()
-                actual_submission_title = page.locator("#submission-metadata-title").inner_text()
-                filename = page.locator("#submission-metadata-filename").inner_text()
-                filesize = page.locator("#submission-metadata-filesize").inner_text()
-                page_count = page.locator("#submission-metadata-pagecount").inner_text()
-                word_count = page.locator("#submission-metadata-wordcount").inner_text()
-                character_count = page.locator("#submission-metadata-charactercount").inner_text()
+                # Wait for the metadata to be loaded
+                page.wait_for_load_state('domcontentloaded')
+                random_wait(2, 3)
+                
+                # Get submission details with more robust selectors
+                try:
+                    author = page.locator("#submission-metadata-author").inner_text()
+                except:
+                    author = "Unknown"
+                
+                try:
+                    assignment_title = page.locator("#submission-metadata-assignment").inner_text()
+                except:
+                    assignment_title = "Quick Submit"
+                
+                try:
+                    actual_submission_title = page.locator("#submission-metadata-title").inner_text()
+                except:
+                    actual_submission_title = submission_title  # Use our original title as fallback
+                
+                try:
+                    filename = page.locator("#submission-metadata-filename").inner_text()
+                except:
+                    filename = os.path.basename(file_path)
+                
+                try:
+                    filesize = page.locator("#submission-metadata-filesize").inner_text()
+                except:
+                    filesize = "Unknown"
+                
+                # Try multiple selectors for page count
+                page_count = "Unknown"
+                try:
+                    page_count = page.locator("#submission-metadata-pagecount").inner_text()
+                except:
+                    try:
+                        page_count = page.locator("dd.submission-metadata.imagable").nth(0).inner_text()
+                    except:
+                        try:
+                            # Look for any element containing page count
+                            page_elements = page.locator('dt:has-text("Page count")').locator('+ dd').all()
+                            if page_elements:
+                                page_count = page_elements[0].inner_text()
+                        except:
+                            pass
+                
+                # Try multiple selectors for word count
+                word_count = "Unknown"
+                try:
+                    word_count = page.locator("#submission-metadata-wordcount").inner_text()
+                except:
+                    try:
+                        word_count = page.locator("dd.submission-metadata.imagable").nth(1).inner_text()
+                    except:
+                        try:
+                            # Look for any element containing word count
+                            word_elements = page.locator('dt:has-text("Word count")').locator('+ dd').all()
+                            if word_elements:
+                                word_count = word_elements[0].inner_text()
+                        except:
+                            pass
+                
+                # Try multiple selectors for character count
+                character_count = "Unknown"
+                try:
+                    character_count = page.locator("#submission-metadata-charactercount").inner_text()
+                except:
+                    try:
+                        character_count = page.locator("dd.submission-metadata.imagable").nth(2).inner_text()
+                    except:
+                        try:
+                            # Look for any element containing character count
+                            char_elements = page.locator('dt:has-text("Character count")').locator('+ dd').all()
+                            if char_elements:
+                                character_count = char_elements[0].inner_text()
+                        except:
+                            pass
                 
                 log(f"Submission metadata extracted:")
                 log(f"  Author: {author}")
@@ -787,17 +855,24 @@ def process_turnitin(file_path: str, chat_id: int, bot):
                 log(f"  Words: {word_count}")
                 log(f"  Characters: {character_count}")
                 
-                # Send simplified metadata to user (only essential info)
-                metadata_msg = f"""✅ <b>Document Verified</b>
+                # Only send verification message if we have valid data
+                if page_count != "Unknown" and word_count != "Unknown" and character_count != "Unknown":
+                    # Send simplified metadata to user (only essential info)
+                    metadata_msg = f"""✅ <b>Document Verified</b>
 
 📃 <b>Pages:</b> {page_count}
 🔤 <b>Words:</b> {word_count}
 🔢 <b>Characters:</b> {character_count}
 
 🚀 Submitting to Turnitin..."""
-                
-                verification_msg = bot.send_message(chat_id, metadata_msg)
-                processing_messages.append(verification_msg.message_id)
+                    
+                    verification_msg = bot.send_message(chat_id, metadata_msg)
+                    processing_messages.append(verification_msg.message_id)
+                else:
+                    # If we can't get the metadata, show a generic message
+                    log("Could not extract all metadata, showing generic verification message")
+                    generic_msg = bot.send_message(chat_id, "✅ <b>Document Verified</b>\n\n🚀 Submitting to Turnitin...")
+                    processing_messages.append(generic_msg.message_id)
                 
                 # Update our submission title to match what Turnitin assigned
                 submission_title = actual_submission_title

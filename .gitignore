@@ -1,1 +1,4 @@
 .DS_Store
+.env
+subscriptions.json
+pending_requests.json

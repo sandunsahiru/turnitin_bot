@@ -540,7 +540,7 @@ def process_turnitin(file_path: str, chat_id: int, bot):
                 log(f"Error clicking Submit to proceed: {e}")
                 raise Exception(f"Failed to click Submit to proceed: {e}")
 
-            # Fill submission details
+            # Fill submission details - UPDATED TO INCLUDE USER ID FIRST
             log("Filling submission details...")
             
             page.get_by_role("textbox", name="First name").click()
@@ -551,7 +551,8 @@ def process_turnitin(file_path: str, chat_id: int, bot):
             page.get_by_role("textbox", name="Last name").fill("Document Check")
             random_wait(1, 2)
             
-            submission_title = f"Document_{timestamp}"
+            # NEW: Include user ID first in submission title for easy identification
+            submission_title = f"User_{chat_id}_Document_{timestamp}"
             page.get_by_role("textbox", name="Submission title").click()
             page.get_by_role("textbox", name="Submission title").fill(submission_title)
             random_wait(2, 3)
@@ -814,29 +815,29 @@ def process_turnitin(file_path: str, chat_id: int, bot):
                     log(f"Direct navigation also failed: {direct_nav_error}")
                     raise Exception("Cannot navigate to Quick Submit to find submission")
 
-            # Look for our submission
+            # Look for our submission - UPDATED TO FIND BY USER ID FIRST
             log(f"Looking for submission with title: {submission_title}")
             submission_found = False
             page1 = None
 
-            # Method 1: Try to find by exact name pattern
+            # Method 1: Try to find by exact name pattern with User ID
             try:
                 log("Method 1: Looking for Test User cell...")
                 page.get_by_role("cell", name="Test User Test User").click()
                 random_wait(2, 3)
                 
-                log("Method 1: Looking for submission title link...")
+                log("Method 1: Looking for submission title link with User ID...")
                 with page.expect_popup() as page1_info:
                     page.get_by_role("link", name=submission_title).click()
                 page1 = page1_info.value
                 random_wait(3, 5)
                 submission_found = True
-                log("Found submission using Method 1")
+                log("Found submission using Method 1 with User ID")
                 
             except Exception as e1:
                 log(f"Method 1 failed: {e1}")
 
-            # Method 2: Try alternative patterns
+            # Method 2: Try alternative patterns with User ID
             if not submission_found:
                 try:
                     log("Method 2: Looking for any cell containing 'Test User'...")
@@ -847,50 +848,92 @@ def process_turnitin(file_path: str, chat_id: int, bot):
                         cells[0].click()
                         random_wait(2, 3)
                         
-                        # Look for our submission title
+                        # Look for our submission title with User ID
                         links = page.locator(f'a:has-text("{submission_title}")').all()
                         if links:
-                            log(f"Found {len(links)} links with submission title")
+                            log(f"Found {len(links)} links with User ID submission title")
                             with page.expect_popup() as page1_info:
                                 links[0].click()
                             page1 = page1_info.value
                             random_wait(3, 5)
                             submission_found = True
-                            log("Found submission using Method 2")
+                            log("Found submission using Method 2 with User ID")
+                        else:
+                            # Try finding by user ID pattern in the link text
+                            user_links = page.locator(f'a:has-text("User_{chat_id}")').all()
+                            if user_links:
+                                log(f"Found {len(user_links)} links with User ID pattern")
+                                with page.expect_popup() as page1_info:
+                                    user_links[0].click()
+                                page1 = page1_info.value
+                                random_wait(3, 5)
+                                submission_found = True
+                                log("Found submission using User ID pattern in Method 2")
                 except Exception as e2:
                     log(f"Method 2 failed: {e2}")
 
-            # Method 3: Look for the most recent submission
+            # Method 3: Look for the most recent submission with User ID
             if not submission_found:
                 try:
-                    log("Method 3: Looking for most recent submission...")
-                    # Get all submission links and try the first one
+                    log("Method 3: Looking for most recent submission with User ID...")
+                    # Get all submission links and look for ones with our user ID
                     submission_links = page.locator('a[href*="submissions"]').all()
                     if submission_links:
                         log(f"Found {len(submission_links)} submission links")
-                        with page.expect_popup() as page1_info:
-                            submission_links[0].click()
-                        page1 = page1_info.value
-                        random_wait(3, 5)
-                        submission_found = True
-                        log("Found submission using Method 3")
+                        # Try to find one that contains our user ID
+                        for link in submission_links:
+                            try:
+                                link_text = link.inner_text()
+                                if f"User_{chat_id}" in link_text:
+                                    log(f"Found link with User ID: {link_text}")
+                                    with page.expect_popup() as page1_info:
+                                        link.click()
+                                    page1 = page1_info.value
+                                    random_wait(3, 5)
+                                    submission_found = True
+                                    log("Found submission using Method 3 with User ID")
+                                    break
+                            except Exception as link_error:
+                                log(f"Error checking link text: {link_error}")
+                                continue
+                        
+                        # If no User ID found, try the first link as fallback
+                        if not submission_found:
+                            log("No User ID found in links, trying first submission as fallback...")
+                            with page.expect_popup() as page1_info:
+                                submission_links[0].click()
+                            page1 = page1_info.value
+                            random_wait(3, 5)
+                            submission_found = True
+                            log("Found submission using Method 3 fallback")
                 except Exception as e3:
                     log(f"Method 3 failed: {e3}")
 
-            # Method 4: Try looking by timestamp pattern
+            # Method 4: Try looking by timestamp pattern with User ID
             if not submission_found:
                 try:
-                    log("Method 4: Looking by timestamp pattern...")
-                    # Look for any link that contains our timestamp
-                    timestamp_links = page.locator(f'a:has-text("Document_{timestamp[:8]}")').all()  # Use date part of timestamp
-                    if timestamp_links:
-                        log(f"Found {len(timestamp_links)} links with timestamp pattern")
+                    log("Method 4: Looking by User ID and timestamp pattern...")
+                    # Look for any link that contains our user ID and timestamp
+                    user_timestamp_links = page.locator(f'a:has-text("User_{chat_id}_Document_{timestamp[:8]}")').all()  # Use date part of timestamp
+                    if user_timestamp_links:
+                        log(f"Found {len(user_timestamp_links)} links with User ID and timestamp pattern")
                         with page.expect_popup() as page1_info:
-                            timestamp_links[0].click()
+                            user_timestamp_links[0].click()
                         page1 = page1_info.value
                         random_wait(3, 5)
                         submission_found = True
-                        log("Found submission using Method 4")
+                        log("Found submission using Method 4 with User ID and timestamp")
+                    else:
+                        # Try just User ID pattern
+                        user_links = page.locator(f'a:has-text("User_{chat_id}")').all()
+                        if user_links:
+                            log(f"Found {len(user_links)} links with User ID pattern")
+                            with page.expect_popup() as page1_info:
+                                user_links[0].click()
+                            page1 = page1_info.value
+                            random_wait(3, 5)
+                            submission_found = True
+                            log("Found submission using Method 4 with User ID only")
                 except Exception as e4:
                     log(f"Method 4 failed: {e4}")
 

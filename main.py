@@ -1,6 +1,8 @@
 import os
 import json
 import time
+import threading
+import queue
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import telebot
@@ -13,14 +15,19 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID"))
 
 # Initialize bot
-bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode=None)
+bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode='HTML')  # Set default parse mode
+
+# Processing queue
+processing_queue = queue.Queue()
+processing_thread = None
+processing_lock = threading.Lock()
 
 # Subscription plans
 MONTHLY_PLANS = {
-    "1_month": {"price": 2500, "duration": 30, "name": "1 Month"},
-    "3_months": {"price": 6000, "duration": 90, "name": "3 Months"},
-    "6_months": {"price": 10000, "duration": 180, "name": "6 Months"},
-    "12_months": {"price": 18000, "duration": 365, "name": "12 Months"}
+    "1_month": {"price": 1500, "duration": 30, "name": "1 Month"},
+    "3_months": {"price": 4000, "duration": 90, "name": "3 Months"},
+    "6_months": {"price": 6000, "duration": 180, "name": "6 Months"},
+    "12_months": {"price": 8000, "duration": 365, "name": "12 Months"}
 }
 
 DOCUMENT_PLANS = {
@@ -70,6 +77,21 @@ def save_pending_requests(data):
     """Save pending subscription requests"""
     with open("pending_requests.json", "w") as f:
         json.dump(data, f, indent=2)
+
+def load_processing_queue():
+    """Load processing queue from file"""
+    try:
+        if os.path.exists("processing_queue.json"):
+            with open("processing_queue.json", "r") as f:
+                return json.load(f)
+        return []
+    except:
+        return []
+
+def save_processing_queue(queue_list):
+    """Save processing queue to file"""
+    with open("processing_queue.json", "w") as f:
+        json.dump(queue_list, f, indent=2)
 
 def is_user_subscribed(user_id):
     """Check if user has active subscription"""
@@ -152,8 +174,74 @@ def create_admin_menu():
         types.InlineKeyboardButton("✏️ Edit Subscription", callback_data="admin_edit"),
         types.InlineKeyboardButton("📊 Statistics", callback_data="admin_stats")
     )
+    markup.add(
+        types.InlineKeyboardButton("🔄 Processing Queue", callback_data="admin_queue")
+    )
     
     return markup
+
+def process_documents_worker():
+    """Worker thread to process documents from queue"""
+    while True:
+        try:
+            # Get item from queue (blocking)
+            queue_item = processing_queue.get()
+            
+            if queue_item is None:  # Shutdown signal
+                break
+            
+            log(f"Processing document for user {queue_item['user_id']}")
+            
+            # Update user about processing start
+            try:
+                bot.send_message(
+                    queue_item['user_id'], 
+                    "🔄 <b>Your document is now being processed...</b>\n\n⏳ Please wait, this may take a few minutes."
+                )
+            except Exception as msg_error:
+                log(f"Error sending processing message: {msg_error}")
+            
+            # Process the document
+            try:
+                process_turnitin(queue_item['file_path'], queue_item['user_id'], bot)
+                log(f"Successfully processed document for user {queue_item['user_id']}")
+            except Exception as process_error:
+                log(f"Error processing document for user {queue_item['user_id']}: {process_error}")
+                try:
+                    bot.send_message(
+                        queue_item['user_id'], 
+                        f"❌ <b>Error processing document:</b>\n\n{str(process_error)}\n\n💡 Please try again or contact support."
+                    )
+                except:
+                    pass
+            
+            # Mark task as done
+            processing_queue.task_done()
+            
+        except Exception as worker_error:
+            log(f"Worker thread error: {worker_error}")
+            # Mark task as done even if there was an error
+            try:
+                processing_queue.task_done()
+            except:
+                pass
+
+def start_processing_worker():
+    """Start the document processing worker thread"""
+    global processing_thread
+    
+    if processing_thread is None or not processing_thread.is_alive():
+        processing_thread = threading.Thread(target=process_documents_worker, daemon=True)
+        processing_thread.start()
+        log("Document processing worker thread started")
+
+def get_queue_position(user_id):
+    """Get user's position in processing queue"""
+    queue_list = list(processing_queue.queue)
+    for i, item in enumerate(queue_list):
+        if item['user_id'] == user_id:
+            return i + 1
+    return None
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -164,7 +252,6 @@ def send_welcome(message):
         bot.send_message(
             user_id,
             "<b>Admin Panel</b>\n\nWelcome admin! Choose an option:",
-            parse_mode='HTML',
             reply_markup=create_admin_menu()
         )
         return
@@ -181,7 +268,7 @@ def send_welcome(message):
             docs_remaining = user_info["documents_remaining"]
             welcome_text = f"<b>Welcome back!</b>\n\nYou have <b>{docs_remaining}</b> document(s) remaining.\n\nSend me a document to get Turnitin reports!"
         
-        bot.send_message(user_id, welcome_text, parse_mode='HTML')
+        bot.send_message(user_id, welcome_text)
     else:
         welcome_text = """<b>Welcome to Turnitin Report Bot!</b>
 
@@ -195,7 +282,6 @@ def send_welcome(message):
         bot.send_message(
             user_id,
             welcome_text,
-            parse_mode='HTML',
             reply_markup=create_main_menu()
         )
 
@@ -214,7 +300,6 @@ def callback_query(call):
             "<b>Monthly Subscription Plans</b>\n\nChoose your plan:",
             call.message.chat.id,
             call.message.message_id,
-            parse_mode='HTML',
             reply_markup=create_monthly_plans_menu()
         )
     
@@ -223,7 +308,6 @@ def callback_query(call):
             "<b>Document-Based Plans</b>\n\nChoose your plan:",
             call.message.chat.id,
             call.message.message_id,
-            parse_mode='HTML',
             reply_markup=create_document_plans_menu()
         )
     
@@ -446,19 +530,28 @@ def handle_admin_callbacks(call):
         show_pending_requests(call)
     elif call.data == "admin_stats":
         show_admin_stats(call)
+    elif call.data == "admin_queue":
+        show_processing_queue(call)
+    elif call.data == "back_to_admin":
+        bot.edit_message_text(
+            "<b>Admin Panel</b>\n\nWelcome admin! Choose an option:",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=create_admin_menu()
+        )
 
 def show_all_subscriptions(call):
     """Show all active subscriptions to admin"""
     subscriptions = load_subscriptions()
     
     if not subscriptions:
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
         bot.edit_message_text(
             "📋 <b>No Active Subscriptions</b>",
             call.message.chat.id,
             call.message.message_id,
-            reply_markup=types.InlineKeyboardMarkup().add(
-                types.InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin")
-            )
+            reply_markup=markup
         )
         return
     
@@ -488,14 +581,15 @@ def show_pending_requests(call):
     pending_requests = load_pending_requests()
     pending_only = {k: v for k, v in pending_requests.items() if v["status"] == "pending"}
     
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
+    
     if not pending_only:
         bot.edit_message_text(
             "📋 <b>No Pending Requests</b>",
             call.message.chat.id,
             call.message.message_id,
-            reply_markup=types.InlineKeyboardMarkup().add(
-                types.InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin")
-            )
+            reply_markup=markup
         )
         return
     
@@ -509,9 +603,6 @@ def show_pending_requests(call):
         requests_text += f"📝 ID: {request_id}\n\n"
     
     requests_text += "\nUse /approve [request_id] to approve"
-    
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
     
     bot.edit_message_text(
         requests_text,
@@ -528,6 +619,7 @@ def show_admin_stats(call):
     active_monthly = 0
     active_document = 0
     total_pending = len([r for r in pending_requests.values() if r["status"] == "pending"])
+    queue_size = processing_queue.qsize()
     
     for user_data in subscriptions.values():
         if "end_date" in user_data:
@@ -543,6 +635,7 @@ def show_admin_stats(call):
 📅 <b>Active Monthly Subscriptions:</b> {active_monthly}
 📄 <b>Active Document Subscriptions:</b> {active_document}
 ⏳ <b>Pending Requests:</b> {total_pending}
+🔄 <b>Processing Queue:</b> {queue_size} documents
 👥 <b>Total Users in System:</b> {len(subscriptions)}
 
 📈 <b>Generated:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
@@ -552,6 +645,39 @@ def show_admin_stats(call):
     
     bot.edit_message_text(
         stats_text,
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup
+    )
+
+def show_processing_queue(call):
+    """Show current processing queue to admin"""
+    queue_list = list(processing_queue.queue)
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
+    
+    if not queue_list:
+        bot.edit_message_text(
+            "🔄 <b>Processing Queue</b>\n\nQueue is empty.",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=markup
+        )
+        return
+    
+    queue_text = f"🔄 <b>Processing Queue ({len(queue_list)} items)</b>\n\n"
+    
+    for i, item in enumerate(queue_list[:10]):  # Show first 10 items
+        queue_text += f"{i+1}. User ID: {item['user_id']}\n"
+        queue_text += f"   File: {os.path.basename(item['file_path'])}\n"
+        queue_text += f"   Added: {item.get('added_time', 'Unknown')}\n\n"
+    
+    if len(queue_list) > 10:
+        queue_text += f"... and {len(queue_list) - 10} more items"
+    
+    bot.edit_message_text(
+        queue_text,
         call.message.chat.id,
         call.message.message_id,
         reply_markup=markup
@@ -679,7 +805,6 @@ def handle_document(message):
         bot.reply_to(
             message,
             "<b>No Active Subscription</b>\n\nPlease purchase a subscription to use this service.",
-            parse_mode='HTML',
             reply_markup=create_main_menu()
         )
         return
@@ -693,7 +818,6 @@ def handle_document(message):
             bot.reply_to(
                 message,
                 "<b>No Documents Remaining</b>\n\nYour document allowance has been used up. Please purchase a new plan.",
-                parse_mode='HTML',
                 reply_markup=create_main_menu()
             )
             return
@@ -720,11 +844,11 @@ def process_user_document(message):
         file_info = bot.get_file(message.document.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        # Save file
+        # Save file with user ID first in filename
         original_filename = message.document.file_name or "document"
         ext = os.path.splitext(original_filename)[1]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        new_filename = f"{message.chat.id}_{timestamp}{ext}"
+        new_filename = f"{message.chat.id}_{timestamp}_{original_filename}"
         
         upload_dir = "uploads"
         os.makedirs(upload_dir, exist_ok=True)
@@ -733,18 +857,44 @@ def process_user_document(message):
         with open(file_path, 'wb') as f:
             f.write(downloaded_file)
         
-        log(f"Saved document to {file_path}. Initiating Turnitin process.")
+        log(f"Saved document to {file_path}")
         
-        # Process through Turnitin
-        process_turnitin(file_path, message.chat.id, bot)
+        # Add to processing queue
+        queue_item = {
+            'user_id': message.chat.id,
+            'file_path': file_path,
+            'original_filename': original_filename,
+            'added_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        processing_queue.put(queue_item)
+        queue_position = processing_queue.qsize()
+        
+        # Notify user about queue position
+        if queue_position == 1:
+            queue_message = "📄 <b>Document added to processing queue</b>\n\n🔄 Your document will be processed next."
+        else:
+            queue_message = f"📄 <b>Document added to processing queue</b>\n\n📊 Position in queue: <b>{queue_position}</b>\n⏳ Estimated wait time: <b>{(queue_position-1) * 3-5} minutes</b>"
+        
+        bot.send_message(message.chat.id, queue_message)
+        log(f"Added document to queue for user {message.chat.id}. Queue size: {queue_position}")
         
     except Exception as e:
         bot.reply_to(message, f"❌ Failed to process file: {e}")
         log(f"Error handling document: {e}")
 
 if __name__ == "__main__":
+    # Start the processing worker thread
+    start_processing_worker()
+    
     log("🤖 Subscription Telegram bot is running... (press Ctrl+C to stop)")
     try:
         bot.infinity_polling()
     except Exception as e:
         log(f"Infinity polling error: {e}")
+    finally:
+        # Shutdown the worker thread
+        processing_queue.put(None)  # Signal to stop
+        if processing_thread and processing_thread.is_alive():
+            processing_thread.join(timeout=5)
+        log("Bot shutdown complete")

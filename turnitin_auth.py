@@ -2,6 +2,7 @@ import os
 import time
 import random
 import json
+import requests
 from datetime import datetime
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
@@ -20,8 +21,52 @@ def random_wait(min_seconds=2, max_seconds=5):
     wait_time = random.uniform(min_seconds, max_seconds)
     time.sleep(wait_time)
 
+def check_network_connectivity():
+    """Check if the server can reach Turnitin"""
+    try:
+        log("Testing network connectivity to Turnitin...")
+        response = requests.get("https://www.turnitin.com", timeout=30)
+        log(f"Network test response code: {response.status_code}")
+        log(f"Response headers: {dict(list(response.headers.items())[:5])}")  # First 5 headers
+        return True
+    except Exception as network_error:
+        log(f"Network connectivity test failed: {network_error}")
+        return False
+
+def test_server_environment():
+    """Test if server environment can run Playwright"""
+    try:
+        log("Testing server environment for Playwright compatibility...")
+        p = sync_playwright().start()
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+        context = browser.new_context()
+        page = context.new_page()
+        
+        # Test basic navigation
+        page.goto("https://httpbin.org/user-agent", timeout=30000)
+        content = page.content()
+        log(f"Test page content length: {len(content)} characters")
+        
+        page.close()
+        context.close()
+        browser.close()
+        p.stop()
+        
+        log("Server environment test passed")
+        return True
+    except Exception as test_error:
+        log(f"Server environment test failed: {test_error}")
+        return False
+
 def create_browser():
-    """Create and return a browser instance - Fixed for stability"""
+    """Create and return a browser instance - Enhanced for server deployment"""
+    # First test network and environment
+    if not check_network_connectivity():
+        raise Exception("Network connectivity test failed - cannot reach external sites")
+    
+    if not test_server_environment():
+        raise Exception("Server environment test failed - Playwright may not be properly installed")
+    
     p = sync_playwright().start()
     browser = None
     
@@ -30,22 +75,20 @@ def create_browser():
             log(f"Browser launch attempt {attempt + 1}/3...")
             
             if attempt == 0:
-                # First attempt: Conservative headless mode for stability
+                # First attempt: Server-optimized headless mode
                 browser = p.chromium.launch(
                     headless=True,
-                    slow_mo=100,  # Add small delay between actions
+                    slow_mo=300,  # Slower for server
                     args=[
                         '--no-sandbox',
                         '--disable-dev-shm-usage',
                         '--disable-gpu',
-                        '--disable-features=VizDisplayCompositor',
-                        '--disable-extensions',
-                        '--disable-plugins',
+                        '--disable-software-rasterizer',
                         '--disable-background-timer-throttling',
                         '--disable-backgrounding-occluded-windows',
                         '--disable-renderer-backgrounding',
-                        '--disable-field-trial-config',
-                        '--disable-back-forward-cache',
+                        '--disable-features=TranslateUI',
+                        '--disable-features=BlinkGenPropertyTrees',
                         '--disable-ipc-flooding-protection',
                         '--memory-pressure-off',
                         '--max_old_space_size=4096',
@@ -56,38 +99,39 @@ def create_browser():
                         '--disable-translate',
                         '--disable-background-networking',
                         '--disable-sync',
+                        '--disable-extensions',
+                        '--disable-plugins',
                         '--metrics-recording-only',
                         '--no-report-upload',
-                        '--disable-blink-features=AutomationControlled',  # Hide automation
+                        '--disable-blink-features=AutomationControlled',
                         '--disable-web-security',
                         '--allow-running-insecure-content',
                         '--ignore-certificate-errors',
                         '--ignore-ssl-errors',
-                        '--ignore-certificate-errors-spki-list'
+                        '--ignore-certificate-errors-spki-list',
+                        '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                     ]
                 )
             elif attempt == 1:
-                # Second attempt: Minimal arguments
+                # Second attempt: Even more conservative
                 browser = p.chromium.launch(
                     headless=True,
-                    slow_mo=200,
+                    slow_mo=500,  # Much slower
                     args=[
                         '--no-sandbox',
                         '--disable-dev-shm-usage',
                         '--disable-gpu',
-                        '--single-process'
+                        '--single-process',
+                        '--disable-features=VizDisplayCompositor',
+                        '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                     ]
                 )
             else:
-                # Third attempt: Try with visible mode for debugging
-                log("Trying visible mode for debugging...")
+                # Third attempt: Minimal args - for debugging you might want to set headless=False temporarily
                 browser = p.chromium.launch(
-                    headless=False,  # Visible for debugging
-                    slow_mo=500,
-                    args=[
-                        '--no-sandbox',
-                        '--disable-dev-shm-usage'
-                    ]
+                    headless=True,  # Change to False temporarily to see what's happening
+                    slow_mo=1000,
+                    args=['--no-sandbox', '--disable-dev-shm-usage']
                 )
             
             log(f"Browser launched successfully on attempt {attempt + 1}")
@@ -129,7 +173,7 @@ def create_browser():
         raise Exception("Could not launch any browser")
 
 def create_browser_context(browser):
-    """Create browser context with enhanced stability"""
+    """Create browser context with server-optimized settings"""
     cookies_path = "cookies.json"
     context = None
     
@@ -144,25 +188,25 @@ def create_browser_context(browser):
             log(f"Browser context test failed: {browser_test_error}")
             raise Exception(f"Browser is not accessible: {browser_test_error}")
         
-        # Enhanced context options for stability
+        # Server-optimized context options
         context_options = {
             'viewport': {'width': 1920, 'height': 1080},
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'user_agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'java_script_enabled': True,
             'accept_downloads': True,
             'bypass_csp': True,
             'ignore_https_errors': True,
             'extra_http_headers': {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
                 'Connection': 'keep-alive',
                 'Upgrade-Insecure-Requests': '1',
                 'Sec-Fetch-Site': 'none',
                 'Sec-Fetch-Mode': 'navigate',
                 'Sec-Fetch-User': '?1',
-                'Sec-Fetch-Dest': 'document'
+                'Sec-Fetch-Dest': 'document',
+                'Cache-Control': 'max-age=0'
             }
         }
         
@@ -218,6 +262,7 @@ def create_browser_context(browser):
             # Create minimal fresh context
             minimal_options = {
                 'viewport': {'width': 1920, 'height': 1080},
+                'user_agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'java_script_enabled': True,
                 'ignore_https_errors': True
             }
@@ -239,12 +284,12 @@ def create_page(context):
         # Set additional headers and configurations
         try:
             page.set_extra_http_headers({
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
                 'Connection': 'keep-alive',
                 'Upgrade-Insecure-Requests': '1',
+                'Cache-Control': 'max-age=0'
             })
             
             # Test the page immediately
@@ -288,7 +333,7 @@ def create_page(context):
         raise Exception("Page is not stable enough to proceed")
 
 def check_session_validity(page):
-    """Check if current session is valid with better error handling"""
+    """Check if current session is valid with enhanced server debugging"""
     try:
         log("Checking session validity...")
         
@@ -302,14 +347,36 @@ def check_session_validity(page):
         
         log("About to navigate to Turnitin login page...")
         
-        # Try navigation with robust error handling
+        # Try navigation with enhanced server handling
         try:
+            # Take screenshot before navigation
+            try:
+                page.screenshot(path="debug_before_turnitin_nav.png")
+                log("Screenshot saved: debug_before_turnitin_nav.png")
+            except Exception as screenshot_error:
+                log(f"Could not take screenshot: {screenshot_error}")
+            
             page.goto("https://www.turnitin.com/login_page.asp?lang=en_us", 
-                     timeout=60000, 
-                     wait_until="domcontentloaded")  # Changed from "load" to "domcontentloaded"
+                     timeout=90000,  # Increased timeout for server
+                     wait_until="domcontentloaded")
             log("Successfully navigated to login page")
+            
+            # Take screenshot after navigation
+            try:
+                page.screenshot(path="debug_after_turnitin_nav.png")
+                log("Screenshot saved: debug_after_turnitin_nav.png")
+            except Exception as screenshot_error:
+                log(f"Could not take screenshot: {screenshot_error}")
+                
         except Exception as nav_error:
             log(f"Navigation error: {nav_error}")
+            
+            # Take screenshot of failed state
+            try:
+                page.screenshot(path="debug_navigation_failed.png")
+                log("Screenshot saved: debug_navigation_failed.png")
+            except:
+                pass
             
             # Check if the page/context is still valid
             try:
@@ -322,11 +389,11 @@ def check_session_validity(page):
             # Try a simpler approach
             try:
                 log("Trying simpler navigation approach...")
-                page.goto("https://www.turnitin.com/", timeout=45000, wait_until="domcontentloaded")
+                page.goto("https://www.turnitin.com/", timeout=60000, wait_until="domcontentloaded")
                 log("Successfully navigated to Turnitin homepage")
-                time.sleep(2)
+                time.sleep(3)
                 page.goto("https://www.turnitin.com/login_page.asp?lang=en_us", 
-                         timeout=45000, 
+                         timeout=60000, 
                          wait_until="domcontentloaded")
                 log("Successfully navigated to login page on retry")
             except Exception as retry_nav_error:
@@ -334,18 +401,36 @@ def check_session_validity(page):
                 raise Exception(f"Cannot access Turnitin website: {retry_nav_error}")
         
         log("Navigated to login page successfully")
-        random_wait(3, 5)
+        random_wait(5, 8)  # Longer wait for server
         
         # Check if login form is visible (means session expired)
         log("Checking if login form is visible...")
         try:
             # Use a more robust way to check for login form
-            email_selector = 'input[name="email"], input[type="email"], input[placeholder*="email" i]'
-            page.wait_for_selector(email_selector, timeout=10000)
-            email_visible = page.locator(email_selector).is_visible()
-            log(f"Email textbox visible: {email_visible}")
+            email_selectors = [
+                'input[name="email"]',
+                'input[type="email"]', 
+                'input[placeholder*="email" i]',
+                'input[id*="email" i]',
+                '#email',
+                '#user_email'
+            ]
             
-            if email_visible:
+            email_found = False
+            for selector in email_selectors:
+                try:
+                    log(f"Checking for email selector: {selector}")
+                    page.wait_for_selector(selector, timeout=5000)
+                    email_visible = page.locator(selector).is_visible()
+                    log(f"Email field with selector {selector} visible: {email_visible}")
+                    if email_visible:
+                        email_found = True
+                        break
+                except Exception as selector_error:
+                    log(f"Email selector {selector} failed: {selector_error}")
+                    continue
+            
+            if email_found:
                 log("Session expired - login form detected")
                 return False
             else:
@@ -364,7 +449,7 @@ def check_session_validity(page):
         return False
 
 def perform_login(page, context):
-    """Perform login to Turnitin with enhanced stability"""
+    """Perform login to Turnitin with enhanced server debugging"""
     log("Need to perform fresh login...")
     
     # First, check if the current page is still accessible
@@ -394,34 +479,122 @@ def perform_login(page, context):
         
         log("Navigating to login page for fresh login...")
         try:
+            # Take screenshot before login navigation
+            page.screenshot(path="debug_before_login.png")
+            log("Screenshot saved: debug_before_login.png")
+            
             page.goto("https://www.turnitin.com/login_page.asp?lang=en_us", 
-                     timeout=60000, 
+                     timeout=90000,  # Increased timeout for server
                      wait_until="domcontentloaded")
             log("Successfully navigated to login page for fresh login")
+            
+            # Take screenshot after login navigation
+            page.screenshot(path="debug_login_page.png")
+            log("Screenshot saved: debug_login_page.png")
+            
         except Exception as login_nav_error:
             log(f"Failed to navigate to login page: {login_nav_error}")
+            # Take screenshot of failed login navigation
+            try:
+                page.screenshot(path="debug_login_nav_failed.png")
+                log("Screenshot saved: debug_login_nav_failed.png")
+            except:
+                pass
             raise Exception(f"Cannot reach Turnitin login page: {login_nav_error}")
         
-        random_wait(3, 5)
+        random_wait(5, 8)  # Longer wait for server
+        
+        # Debug: Check what's actually on the page
+        try:
+            page_title = page.title()
+            page_url = page.url
+            page_content = page.content()
+            log(f"Login page title: {page_title}")
+            log(f"Login page URL: {page_url}")
+            log(f"Page content length: {len(page_content)} characters")
+            log(f"Page content preview: {page_content[:500]}")  # First 500 chars
+        except Exception as debug_error:
+            log(f"Debug info collection failed: {debug_error}")
         
         log("Filling in email...")
         try:
-            email_selector = 'input[name="email"], input[type="email"], input[placeholder*="email" i]'
-            page.wait_for_selector(email_selector, timeout=15000)
-            email_field = page.locator(email_selector).first
+            # Enhanced email field detection with more selectors
+            email_selectors = [
+                'input[name="email"]',
+                'input[type="email"]', 
+                'input[placeholder*="email" i]',
+                'input[id*="email" i]',
+                '#email',
+                '#user_email',
+                '.email-input',
+                'input[autocomplete="email"]'
+            ]
+            
+            email_field = None
+            for selector in email_selectors:
+                try:
+                    log(f"Trying email selector: {selector}")
+                    page.wait_for_selector(selector, timeout=10000)
+                    email_field = page.locator(selector).first
+                    if email_field.is_visible():
+                        log(f"Found visible email field with selector: {selector}")
+                        break
+                except Exception as selector_error:
+                    log(f"Email selector {selector} failed: {selector_error}")
+                    continue
+            
+            if not email_field:
+                # Take screenshot of current state
+                page.screenshot(path="debug_no_email_field.png")
+                log("Screenshot saved: debug_no_email_field.png")
+                raise Exception("No email field found with any selector")
+            
             email_field.click()
             email_field.fill(TURNITIN_EMAIL)
             log("Email filled successfully")
+            
+            # Take screenshot after email filled
+            page.screenshot(path="debug_email_filled.png")
+            log("Screenshot saved: debug_email_filled.png")
+            
         except Exception as email_error:
             log(f"Error filling email: {email_error}")
+            # Take screenshot of email error state
+            try:
+                page.screenshot(path="debug_email_error.png")
+                log("Screenshot saved: debug_email_error.png")
+            except:
+                pass
             raise Exception(f"Cannot fill email field: {email_error}")
         
-        random_wait(2, 4)
+        random_wait(3, 5)
         
         log("Filling in password...")
         try:
-            password_selector = 'input[name="password"], input[type="password"], input[placeholder*="password" i]'
-            password_field = page.locator(password_selector).first
+            password_selectors = [
+                'input[name="password"]',
+                'input[type="password"]',
+                'input[placeholder*="password" i]',
+                'input[id*="password" i]',
+                '#password',
+                '#user_password'
+            ]
+            
+            password_field = None
+            for selector in password_selectors:
+                try:
+                    log(f"Trying password selector: {selector}")
+                    password_field = page.locator(selector).first
+                    if password_field.is_visible():
+                        log(f"Found visible password field with selector: {selector}")
+                        break
+                except Exception as selector_error:
+                    log(f"Password selector {selector} failed: {selector_error}")
+                    continue
+            
+            if not password_field:
+                raise Exception("No password field found")
+            
             password_field.click()
             password_field.fill(TURNITIN_PASSWORD)
             log("Password filled successfully")
@@ -429,27 +602,56 @@ def perform_login(page, context):
             log(f"Error filling password: {password_error}")
             raise Exception(f"Cannot fill password field: {password_error}")
         
-        random_wait(2, 4)
+        random_wait(3, 5)
         
         log("Clicking 'Log in' button...")
         try:
-            login_button_selector = 'button:has-text("Log in"), input[type="submit"], button[type="submit"]'
-            login_button = page.locator(login_button_selector).first
-            login_button.click()
-            log("Login button clicked successfully")
+            login_button_selectors = [
+                'button:has-text("Log in")',
+                'input[type="submit"]',
+                'button[type="submit"]',
+                'input[value*="Log in"]',
+                'button:has-text("Login")',
+                '.login-button'
+            ]
+            
+            login_clicked = False
+            for selector in login_button_selectors:
+                try:
+                    log(f"Trying login button selector: {selector}")
+                    login_button = page.locator(selector).first
+                    if login_button.is_visible():
+                        login_button.click()
+                        log(f"Login button clicked successfully with selector: {selector}")
+                        login_clicked = True
+                        break
+                except Exception as login_selector_error:
+                    log(f"Login selector {selector} failed: {login_selector_error}")
+                    continue
+            
+            if not login_clicked:
+                raise Exception("No login button found or clicked")
+                
         except Exception as login_click_error:
             log(f"Error clicking login button: {login_click_error}")
             raise Exception(f"Cannot click login button: {login_click_error}")
         
         log("Waiting for login to complete...")
-        page.wait_for_timeout(10000)
+        page.wait_for_timeout(15000)  # Longer wait for server
+        
+        # Take screenshot after login attempt
+        try:
+            page.screenshot(path="debug_after_login.png")
+            log("Screenshot saved: debug_after_login.png")
+        except Exception as screenshot_error:
+            log(f"Could not take post-login screenshot: {screenshot_error}")
         
         # Check if login was successful
         try:
             log("Checking for login success...")
             # Try to wait for a successful login indicator
             try:
-                page.wait_for_selector('a.sn_quick_submit', timeout=20000)
+                page.wait_for_selector('a.sn_quick_submit', timeout=30000)  # Increased timeout
                 log("Login successful - Quick Submit link found")
             except:
                 # Alternative check - see if we're no longer on login page
@@ -458,6 +660,18 @@ def perform_login(page, context):
                     log("Login appears successful - no longer on login page")
                 else:
                     log("Still on login page, checking for errors...")
+                    # Check for error messages
+                    try:
+                        error_elements = page.locator('.error, .alert, [class*="error"], [class*="alert"]').all()
+                        for element in error_elements:
+                            try:
+                                error_text = element.inner_text()
+                                if error_text:
+                                    log(f"Found error message: {error_text}")
+                            except:
+                                pass
+                    except:
+                        pass
                     raise Exception("Login may have failed")
                     
         except Exception as success_check_error:
@@ -553,7 +767,7 @@ def navigate_to_quick_submit(page):
         for url in direct_urls:
             try:
                 log(f"Trying direct URL: {url}")
-                page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                page.goto(url, timeout=90000, wait_until="domcontentloaded")  # Increased timeout
                 log(f"Successfully navigated to: {url}")
                 random_wait(3, 5)
                 return page
@@ -574,3 +788,58 @@ def save_cookies(context):
         log("Cookies updated successfully.")
     except Exception as e:
         log(f"Error updating cookies: {e}")
+
+# Add debugging command to test components
+def debug_login_components():
+    """Debug function to test login components separately"""
+    log("=== DEBUGGING LOGIN COMPONENTS ===")
+    
+    # Test 1: Network connectivity
+    log("1. Testing network connectivity...")
+    if not check_network_connectivity():
+        return False
+    
+    # Test 2: Server environment
+    log("2. Testing server environment...")
+    if not test_server_environment():
+        return False
+    
+    # Test 3: Browser creation
+    log("3. Testing browser creation...")
+    try:
+        p, browser = create_browser()
+        log("Browser created successfully")
+        
+        # Test 4: Context creation
+        log("4. Testing context creation...")
+        context = create_browser_context(browser)
+        log("Context created successfully")
+        
+        # Test 5: Page creation
+        log("5. Testing page creation...")
+        page = create_page(context)
+        log("Page created successfully")
+        
+        # Test 6: Basic navigation
+        log("6. Testing basic navigation...")
+        page.goto("https://httpbin.org/html", timeout=60000)
+        log("Basic navigation successful")
+        
+        # Test 7: Turnitin homepage access
+        log("7. Testing Turnitin homepage access...")
+        page.goto("https://www.turnitin.com/", timeout=90000)
+        page.screenshot(path="debug_turnitin_homepage.png")
+        log("Turnitin homepage access successful, screenshot saved")
+        
+        # Clean up
+        page.close()
+        context.close()
+        browser.close()
+        p.stop()
+        
+        log("=== ALL TESTS PASSED ===")
+        return True
+        
+    except Exception as debug_error:
+        log(f"Debug test failed: {debug_error}")
+        return False

@@ -99,27 +99,55 @@ def submit_document(page, file_path, chat_id, timestamp, bot, processing_message
     page.wait_for_timeout(30000)  # 30 seconds
     
     try:
-        # Extract metadata (simplified)
-        actual_submission_title = page.locator("#submission-metadata-title").inner_text(timeout=10000)
-        page_count = page.locator("#submission-metadata-pagecount").inner_text(timeout=5000)
-        word_count = page.locator("#submission-metadata-wordcount").inner_text(timeout=5000)
+        # Extract metadata with safety checks
+        try:
+            actual_submission_title = page.locator("#submission-metadata-title").inner_text(timeout=10000)
+            if not actual_submission_title or actual_submission_title.strip() == "":
+                actual_submission_title = submission_title
+        except:
+            actual_submission_title = submission_title
+        
+        try:
+            page_count = page.locator("#submission-metadata-pagecount").inner_text(timeout=5000)
+            page_count = page_count.strip() if page_count else "Unknown"
+        except:
+            page_count = "Unknown"
+            
+        try:
+            word_count = page.locator("#submission-metadata-wordcount").inner_text(timeout=5000)
+            word_count = word_count.strip() if word_count else "Unknown"
+        except:
+            word_count = "Unknown"
         
         log(f"Submission metadata - Title: {actual_submission_title}, Pages: {page_count}, Words: {word_count}")
         
-        # Send verification message
-        verification_msg = f"""✅ <b>Document Verified</b>
+        # Only send verification message if we have valid metadata
+        if page_count != "Unknown" and word_count != "Unknown":
+            # Send verification message with HTML escaping
+            import html
+            page_count_safe = html.escape(str(page_count))
+            word_count_safe = html.escape(str(word_count))
+            
+            verification_msg = f"""✅ <b>Document Verified</b>
 
-📃 <b>Pages:</b> {page_count}
-📤 <b>Words:</b> {word_count}
+📃 <b>Pages:</b> {page_count_safe}
+📤 <b>Words:</b> {word_count_safe}
 
 🚀 Submitting to Turnitin..."""
-        
-        verify_msg = bot.send_message(chat_id, verification_msg)
-        processing_messages.append(verify_msg.message_id)
+            
+            verify_msg = bot.send_message(chat_id, verification_msg)
+            processing_messages.append(verify_msg.message_id)
+        else:
+            # Send generic message if metadata extraction failed
+            verify_msg = bot.send_message(chat_id, "✅ <b>Document Verified</b>\n\n🚀 Submitting to Turnitin...")
+            processing_messages.append(verify_msg.message_id)
         
     except Exception as metadata_error:
         log(f"Could not extract metadata: {metadata_error}")
         actual_submission_title = submission_title
+        # Send generic verification message
+        verify_msg = bot.send_message(chat_id, "✅ <b>Document Verified</b>\n\n🚀 Submitting to Turnitin...")
+        processing_messages.append(verify_msg.message_id)
 
     # Click Confirm button (use working method)
     log("Clicking Confirm button...")

@@ -58,14 +58,19 @@ def download_reports_with_retry(page1, chat_id, timestamp, bot, processing_messa
     downloads_dir = "downloads"
     os.makedirs(downloads_dir, exist_ok=True)
 
-    # Wait for page to load
-    page1.wait_for_load_state('networkidle', timeout=30000)
-    msg = bot.send_message(chat_id, "📊 Processing complete. Downloading reports...")
-    processing_messages.append(msg.message_id)
+    # Wait for page to load with longer timeout
+    try:
+        page1.wait_for_load_state('networkidle', timeout=60000)  # Increased from 30 to 60 seconds
+        msg = bot.send_message(chat_id, "📊 Processing complete. Downloading reports...")
+        processing_messages.append(msg.message_id)
+    except Exception as load_error:
+        log(f"Page load timeout, continuing anyway: {load_error}")
+        msg = bot.send_message(chat_id, "📊 Attempting to download reports...")
+        processing_messages.append(msg.message_id)
 
     # Wait for reports to be ready
     log("Waiting 60 seconds for reports...")
-    page1.wait_for_timeout(60000)  # Reduced from 90 to 60 seconds
+    page1.wait_for_timeout(60000)
 
     # Check if reports are available
     if not check_reports_availability(page1):
@@ -116,7 +121,7 @@ def download_similarity_report(page1, chat_id, timestamp, downloads_dir):
         
         # Click Similarity Report option
         page1.wait_for_selector('button:has-text("Similarity Report")', timeout=10000)
-        with page1.expect_download(timeout=30000) as download_info:
+        with page1.expect_download(timeout=60000) as download_info:
             page1.get_by_role("button", name="Similarity Report").click()
         
         download_sim = download_info.value
@@ -141,7 +146,7 @@ def download_ai_report(page1, chat_id, timestamp, downloads_dir):
         
         # Click AI Writing Report option
         page1.wait_for_selector('button:has-text("AI Writing Report")', timeout=10000)
-        with page1.expect_download(timeout=30000) as download_info:
+        with page1.expect_download(timeout=60000) as download_info:
             page1.get_by_role("button", name="AI Writing Report").click()
         
         download_ai = download_info.value

@@ -43,19 +43,17 @@ def random_wait(min_seconds=2, max_seconds=4):
     wait_time = random.uniform(min_seconds, max_seconds)
     time.sleep(wait_time)
 
-def get_webshare_proxy():
-    """Get a working proxy from Webshare API"""
+def get_webshare_proxies():
+    """Get a list of working proxies from Webshare API"""
     if not WEBSHARE_API_TOKEN:
         log("No Webshare API token configured, using direct connection")
-        return None
+        return []
     
     try:
-        # Get proxy list from Webshare API
         headers = {"Authorization": f"Token {WEBSHARE_API_TOKEN}"}
         
-        # Use direct mode for better reliability
         response = requests.get(
-            "https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page=1&page_size=10",
+            "https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page=1&page_size=20",
             headers=headers,
             timeout=30
         )
@@ -65,29 +63,116 @@ def get_webshare_proxy():
             proxies = proxy_data.get('results', [])
             
             if proxies:
-                # Filter for valid US proxies (less likely to be blocked)
+                # Filter for valid proxies, prioritize US proxies
                 us_proxies = [p for p in proxies if p.get('valid') and p.get('country_code') == 'US']
-                if not us_proxies:
-                    us_proxies = [p for p in proxies if p.get('valid')]
+                other_proxies = [p for p in proxies if p.get('valid') and p.get('country_code') != 'US']
                 
-                if us_proxies:
-                    proxy = random.choice(us_proxies)
-                    log(f"Selected Webshare proxy: {proxy['proxy_address']}:{proxy['port']} ({proxy.get('country_code', 'Unknown')})")
-                    return proxy
-                else:
-                    log("No valid proxies found in Webshare response")
+                # Return US proxies first, then others
+                valid_proxies = us_proxies + other_proxies
+                log(f"Retrieved {len(valid_proxies)} valid proxies from Webshare ({len(us_proxies)} US, {len(other_proxies)} others)")
+                return valid_proxies
             else:
                 log("No proxies returned from Webshare API")
         else:
             log(f"Webshare API error: {response.status_code} - {response.text}")
     
     except Exception as e:
-        log(f"Error fetching Webshare proxy: {e}")
+        log(f"Error fetching Webshare proxies: {e}")
     
+    return []
+
+def test_proxy_connection(proxy_info, session=None):
+    """Test if a proxy is working properly with multiple test methods"""
+    if session is None:
+        session = requests.Session()
+    
+    proxy_config = {
+        'http': f"http://{proxy_info['username']}:{proxy_info['password']}@{proxy_info['proxy_address']}:{proxy_info['port']}",
+        'https': f"http://{proxy_info['username']}:{proxy_info['password']}@{proxy_info['proxy_address']}:{proxy_info['port']}"
+    }
+    
+    # Test URLs in order of preference
+    test_urls = [
+        'http://icanhazip.com',
+        'https://api.ipify.org',
+        'http://checkip.amazonaws.com'
+    ]
+    
+    for test_url in test_urls:
+        try:
+            response = session.get(
+                test_url, 
+                proxies=proxy_config, 
+                timeout=15,
+                headers={'User-Agent': random.choice(USER_AGENTS)}
+            )
+            
+            if response.status_code == 200:
+                ip_response = response.text.strip()
+                if ip_response and len(ip_response) < 50:  # Basic IP validation
+                    log(f"Proxy test successful via {test_url}: External IP = {ip_response}")
+                    return True
+        except Exception as e:
+            log(f"Proxy test failed for {test_url}: {e}")
+            continue
+    
+    return False
+
+def get_working_proxy():
+    """Get a working proxy with rotation and testing"""
+    proxies = get_webshare_proxies()
+    
+    if not proxies:
+        log("No proxies available, using direct connection")
+        return None
+    
+    # Shuffle proxies for rotation
+    random.shuffle(proxies)
+    
+    # Test up to 5 proxies to find a working one
+    for i, proxy in enumerate(proxies[:5]):
+        log(f"Testing proxy {i+1}/5: {proxy['proxy_address']}:{proxy['port']} ({proxy.get('country_code', 'Unknown')})")
+        
+        if test_proxy_connection(proxy):
+            log(f"Selected working proxy: {proxy['proxy_address']}:{proxy['port']} ({proxy.get('country_code', 'Unknown')})")
+            return proxy
+        else:
+            log(f"Proxy failed test: {proxy['proxy_address']}:{proxy['port']}")
+    
+    log("No working proxies found after testing 5 proxies, using direct connection")
     return None
 
+def test_browser_proxy(page, proxy_info):
+    """Test proxy functionality within the browser context"""
+    test_urls = [
+        'https://httpbin.org/ip',
+        'https://api64.ipify.org?format=json',
+        'https://icanhazip.com'
+    ]
+    
+    for test_url in test_urls:
+        try:
+            log(f"Testing browser proxy with {test_url}")
+            response = page.goto(test_url, timeout=20000, wait_until='networkidle')
+            
+            if response and response.ok:
+                try:
+                    content = page.content()
+                    # Check if we got a reasonable response
+                    if len(content) > 50 and len(content) < 5000:
+                        log(f"Browser proxy test successful via {test_url}")
+                        return True
+                except Exception as content_error:
+                    log(f"Could not read content from {test_url}: {content_error}")
+                    
+        except Exception as e:
+            log(f"Browser proxy test failed for {test_url}: {e}")
+            continue
+    
+    return False
+
 def get_or_create_browser_session():
-    """Get existing browser session or create new one"""
+    """Get existing browser session or create new one with improved proxy handling"""
     global browser_session
     
     # Check if session exists and is valid
@@ -113,8 +198,8 @@ def get_or_create_browser_session():
         # Start Playwright
         browser_session['playwright'] = sync_playwright().start()
         
-        # Get a working proxy
-        proxy_info = get_webshare_proxy()
+        # Get a working proxy with testing and rotation
+        proxy_info = get_working_proxy()
         
         # Prepare browser launch options
         launch_options = {
@@ -140,7 +225,7 @@ def get_or_create_browser_session():
             }
             launch_options['proxy'] = proxy_config
             browser_session['current_proxy'] = proxy_info
-            log(f"Using Webshare proxy: {proxy_info['proxy_address']}:{proxy_info['port']}")
+            log(f"Using tested proxy: {proxy_info['proxy_address']}:{proxy_info['port']}")
         else:
             log("No proxy configured, using direct connection")
         
@@ -180,18 +265,12 @@ def get_or_create_browser_session():
         browser_session['context'] = browser_session['browser'].new_context(**context_options)
         browser_session['page'] = browser_session['context'].new_page()
         
-        # Test proxy connection if configured
+        # Test proxy connection in browser if configured
         if proxy_info:
-            try:
-                # Test IP to verify proxy is working
-                test_response = browser_session['page'].goto("https://httpbin.org/ip", timeout=30000)
-                if test_response.ok:
-                    ip_info = browser_session['page'].evaluate("() => document.body.innerText")
-                    log(f"Proxy test successful. Current IP info: {ip_info[:100]}")
-                else:
-                    log("Proxy test failed, but continuing...")
-            except Exception as test_error:
-                log(f"Proxy test error: {test_error}, continuing anyway...")
+            if test_browser_proxy(browser_session['page'], proxy_info):
+                log("Browser proxy verification successful")
+            else:
+                log("Browser proxy verification failed, but continuing...")
         
         # Check if we need to login
         if check_and_perform_login():

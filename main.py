@@ -9,21 +9,20 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import telebot
 from telebot import types
-from turnitin_processor import process_turnitin, shutdown_browser_session
 
 # Load environment variables
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID"))
 
-# Initialize standard bot
+# Initialize bot
 bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode='HTML')
 
 # Processing queue
 processing_queue = queue.Queue()
 processing_thread = None
 
-# Subscription plans
+# Subscription plans (same as before)
 MONTHLY_PLANS = {
     "1_month": {"price": 1500, "duration": 30, "name": "1 Month"},
     "3_months": {"price": 4000, "duration": 90, "name": "3 Months"},
@@ -52,6 +51,7 @@ def log(message: str):
 def signal_handler(sig, frame):
     """Handle shutdown signals"""
     log("Shutdown signal received...")
+    from new_turnitin_processor import shutdown_browser_session
     shutdown_browser_session()
     processing_queue.put(None)
     sys.exit(0)
@@ -141,9 +141,9 @@ def process_documents_worker():
             except Exception as msg_error:
                 log(f"Error sending processing message: {msg_error}")
             
-            # Process the document
+            # Process the document using clean method
             try:
-                # Pass the bot instance to the processor
+                from new_turnitin_processor import process_turnitin
                 process_turnitin(queue_item['file_path'], queue_item['user_id'], bot)
                 log(f"Successfully processed document for user {queue_item['user_id']}")
                 
@@ -221,17 +221,14 @@ def create_admin_menu():
         types.InlineKeyboardButton("📋 Pending Requests", callback_data="admin_pending")
     )
     markup.add(
-        types.InlineKeyboardButton("✏️ Edit Subscription", callback_data="admin_edit"),
-        types.InlineKeyboardButton("📊 Statistics", callback_data="admin_stats")
-    )
-    markup.add(
+        types.InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"),
         types.InlineKeyboardButton("📄 Processing Queue", callback_data="admin_queue")
     )
     
     return markup
 
 def process_user_document(message):
-    """Process uploaded document through Turnitin"""
+    """Process uploaded document"""
     try:
         log(f"Received document from user {message.chat.id}: {message.document.file_name}")
         
@@ -436,7 +433,7 @@ def handle_document(message):
     """Handle document uploads"""
     user_id = message.from_user.id
     
-    log(f"DEBUG: Document received from user {user_id}")
+    log(f"Document received from user {user_id}")
     
     # Admin has unlimited access
     if user_id == ADMIN_TELEGRAM_ID:
@@ -502,6 +499,7 @@ if __name__ == "__main__":
         log(f"Polling error: {e}")
     finally:
         log("Bot shutting down...")
+        from new_turnitin_processor import shutdown_browser_session
         shutdown_browser_session()
         processing_queue.put(None)
         if processing_thread and processing_thread.is_alive():

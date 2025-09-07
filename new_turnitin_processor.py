@@ -110,6 +110,22 @@ def get_browser_session():
     # Create new session
     log("Creating new browser session...")
     try:
+        # Set environment variables for Playwright to use custom temp directories
+        temp_dir = '/root/turnitin_bot/playwright_temp'
+        browser_data_dir = '/root/turnitin_bot/browser_data'
+        
+        # Create directories if they don't exist
+        os.makedirs(temp_dir, exist_ok=True)
+        os.makedirs(browser_data_dir, exist_ok=True)
+        
+        # Set environment variables
+        os.environ['TMPDIR'] = temp_dir
+        os.environ['PLAYWRIGHT_BROWSERS_PATH'] = '/root/.cache/ms-playwright'
+        os.environ['PLAYWRIGHT_DOWNLOAD_PATH'] = browser_data_dir
+        
+        log(f"Set custom temp directory: {temp_dir}")
+        log(f"Set custom browser data directory: {browser_data_dir}")
+        
         browser_session['playwright'] = sync_playwright().start()
         
         browser_session['browser'] = browser_session['playwright'].chromium.launch(
@@ -118,7 +134,13 @@ def get_browser_session():
                 '--no-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
-                '--window-size=1920,1080'
+                '--window-size=1920,1080',
+                '--disable-dev-shm-usage',
+                f'--data-path={browser_data_dir}',
+                f'--disk-cache-dir={browser_data_dir}/cache',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding'
             ]
         )
         

@@ -128,13 +128,16 @@ if [ ! -f ".env" ]; then
     print_warning "Creating .env file template..."
     cat > .env << 'EOF'
 # Telegram Bot Configuration
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
-ADMIN_TELEGRAM_ID=your_admin_telegram_id_here
+TELEGRAM_BOT_TOKEN=8183925903:AAGH1wa-zIy2CI1-DFh_CuT-rNWwG04lHpE
+ADMIN_TELEGRAM_ID=1004525688
 
 # Turnitin Service Configuration
-TURNITIN_USERNAME=your_turnitin_username
-TURNITIN_PASSWORD=your_turnitin_password
+TURNITIN_USERNAME=turnitininstructor2
+TURNITIN_PASSWORD=WebCodoo@334676
 TURNITIN_BASE_URL=https://www.turnitright.com
+
+# Webshare API token 
+WEBSHARE_API_TOKEN=7h4gxa47ta0pmy7makrid6bn0c3c685z5sevw75z
 EOF
     print_warning "Please edit .env file with your actual credentials:"
     print_warning "nano $WORK_DIR/.env"

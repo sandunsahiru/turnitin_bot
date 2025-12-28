@@ -2,39 +2,37 @@ import os
 import json
 import time
 import threading
-import queue
 import signal
 import sys
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import telebot
 from telebot import types
-from turnitin_processor import process_turnitin, shutdown_browser_session
 
 # Load environment variables
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID"))
 
-# Initialize standard bot
+# Initialize bot
 bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode='HTML')
 
-# Processing queue
-processing_queue = queue.Queue()
-processing_thread = None
+# Processing queue for admin panel (using persistent queue system now)
+from queue_manager import load_queue
+processing_queue = load_queue  # Function reference for admin callbacks
 
 # Subscription plans
 MONTHLY_PLANS = {
-    "1_month": {"price": 1500, "duration": 30, "name": "1 Month"},
-    "3_months": {"price": 4000, "duration": 90, "name": "3 Months"},
-    "6_months": {"price": 6000, "duration": 180, "name": "6 Months"},
-    "12_months": {"price": 8000, "duration": 365, "name": "12 Months"}
+    "1_month": {"price": 7500, "duration": 30, "name": "1 Month"},
+    "3_months": {"price": 22500, "duration": 90, "name": "3 Months"},
+    "6_months": {"price": 45000, "duration": 180, "name": "6 Months"},
+    "12_months": {"price": 67500, "duration": 365, "name": "12 Months"}
 }
 
 DOCUMENT_PLANS = {
-    "1_doc": {"price": 150, "documents": 1, "name": "1 Document"},
-    "5_docs": {"price": 800, "documents": 5, "name": "5 Documents"},
-    "10_docs": {"price": 1000, "documents": 10, "name": "10 Documents"}
+    "1_doc": {"price": 350, "documents": 1, "name": "1 Document"},
+    "5_docs": {"price": 1500, "documents": 5, "name": "5 Documents"},
+    "10_docs": {"price": 2500, "documents": 10, "name": "10 Documents"}
 }
 
 BANK_DETAILS = """🏦 Commercial Bank
@@ -52,8 +50,7 @@ def log(message: str):
 def signal_handler(sig, frame):
     """Handle shutdown signals"""
     log("Shutdown signal received...")
-    shutdown_browser_session()
-    processing_queue.put(None)
+    # Browser cleanup is handled automatically by Playwright context manager
     sys.exit(0)
 
 # Register signal handlers
@@ -122,58 +119,30 @@ def get_user_subscription_info(user_id):
     
     return subscriptions[user_id_str]
 
-def process_documents_worker():
-    """Worker thread to process documents from queue"""
-    while True:
-        try:
-            queue_item = processing_queue.get()
-            
-            if queue_item is None:  # Shutdown signal
-                break
-            
-            log(f"Processing document for user {queue_item['user_id']}")
-            
+def safe_send_message(chat_id, text, reply_markup=None):
+    """Safely send message with proper error handling"""
+    try:
+        return bot.send_message(chat_id, text, reply_markup=reply_markup)
+    except telebot.apihelper.ApiTelegramException as e:
+        if e.error_code == 403:
+            log(f"User {chat_id} has blocked the bot, skipping message")
+            return None
+        elif e.error_code == 429:
+            log(f"Rate limited, retrying message to {chat_id} in 5 seconds")
+            time.sleep(5)
             try:
-                bot.send_message(
-                    queue_item['user_id'], 
-                    "📄 Your document is now being processed..."
-                )
-            except Exception as msg_error:
-                log(f"Error sending processing message: {msg_error}")
-            
-            # Process the document
-            try:
-                # Pass the bot instance to the processor
-                process_turnitin(queue_item['file_path'], queue_item['user_id'], bot)
-                log(f"Successfully processed document for user {queue_item['user_id']}")
-                
-            except Exception as process_error:
-                log(f"Error processing document: {process_error}")
-                try:
-                    bot.send_message(
-                        queue_item['user_id'], 
-                        f"❌ Error processing document: {str(process_error)}\n\nPlease try again or contact support."
-                    )
-                except:
-                    pass
-            
-            processing_queue.task_done()
-            
-        except Exception as worker_error:
-            log(f"Worker thread error: {worker_error}")
-            try:
-                processing_queue.task_done()
+                return bot.send_message(chat_id, text, reply_markup=reply_markup)
             except:
-                pass
+                log(f"Failed to send message to {chat_id} after retry")
+                return None
+        else:
+            log(f"Telegram API error {e.error_code} sending to {chat_id}: {e.description}")
+            return None
+    except Exception as e:
+        log(f"Unexpected error sending message to {chat_id}: {e}")
+        return None
 
-def start_processing_worker():
-    """Start the document processing worker thread"""
-    global processing_thread
-    
-    if processing_thread is None or not processing_thread.is_alive():
-        processing_thread = threading.Thread(target=process_documents_worker, daemon=True)
-        processing_thread.start()
-        log("Document processing worker thread started")
+# Old processing worker functions removed - now using processor_manager system
 
 def create_main_menu():
     """Create main menu keyboard"""
@@ -260,27 +229,34 @@ def process_user_document(message):
         
         log(f"Saved document to {file_path}")
         
-        # Add to processing queue
-        queue_item = {
-            'user_id': message.chat.id,
-            'file_path': file_path,
-            'original_filename': original_filename,
-            'added_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'status': 'queued'
-        }
-        
-        processing_queue.put(queue_item)
-        queue_position = processing_queue.qsize()
-        
-        # Notify user
-        if queue_position == 1:
-            queue_message = "📄 <b>Document queued for processing</b>\n\n📄 Your document will be processed next."
-        else:
-            estimated_wait = (queue_position - 1) * 2  # 2 minutes per document
-            queue_message = f"📄 <b>Document queued for processing</b>\n\n📊 Position: <b>{queue_position}</b>\n⏳ Estimated wait: <b>{estimated_wait} minutes</b>"
-        
-        bot.send_message(message.chat.id, queue_message)
-        log(f"Added document to queue for user {message.chat.id}. Queue size: {queue_position}")
+        # Add to new queue system and process immediately
+        from queue_manager import add_to_queue
+        from queue_processor import start_immediate_processing, is_processor_running
+
+        queue_id = add_to_queue(file_path, message.chat.id, message.chat.id)
+        if not queue_id:
+            bot.reply_to(message, "❌ Failed to add document to queue. Please try again.")
+            return
+
+        log(f"Added document '{original_filename}' to queue for user {message.chat.id}. Queue ID: {queue_id}")
+
+        # Check if processor is already running
+        if is_processor_running():
+            bot.send_message(message.chat.id, "✅ <b>Document added to batch!</b>\n\n⚡ <b>Processing Status:</b> Active batch in progress\n📊 Your document will be included in the current batch\n\n💡 You'll receive reports once the batch completes")
+            return
+
+        # Start immediate processing (single-threaded, no delays)
+        bot.send_message(message.chat.id, "✅ <b>Document received!</b>\n\n🚀 Starting batch processing immediately...\n📊 Checking for additional documents to include in batch")
+
+        try:
+            processor_started = start_immediate_processing(bot)
+            if processor_started:
+                bot.send_message(message.chat.id, "🚀 <b>Batch processing started!</b>\n📊 Your document is being processed now")
+            else:
+                bot.send_message(message.chat.id, "⚠️ <b>Processing delayed</b>\nProcessor temporarily unavailable. Will retry automatically.")
+        except Exception as e:
+            log(f"Error starting immediate processing: {e}")
+            bot.send_message(message.chat.id, "⚠️ <b>Processing Error</b>\nFailed to start processing. Please try again later.")
         
     except Exception as e:
         bot.reply_to(message, f"❌ Failed to process file: {e}")
@@ -291,19 +267,19 @@ def process_user_document(message):
 def send_welcome(message):
     """Handle /start command"""
     user_id = message.from_user.id
-    
+
     # Admin gets admin panel
     if user_id == ADMIN_TELEGRAM_ID:
-        bot.send_message(
+        safe_send_message(
             user_id,
             "🛠️ <b>Admin Panel</b>\n\nWelcome admin! Choose an option:",
             reply_markup=create_admin_menu()
         )
         return
-    
+
     # Check user subscription
     is_subscribed, sub_type = is_user_subscribed(user_id)
-    
+
     if is_subscribed:
         user_info = get_user_subscription_info(user_id)
         if sub_type == "monthly":
@@ -312,8 +288,8 @@ def send_welcome(message):
         else:
             docs_remaining = user_info["documents_remaining"]
             welcome_text = f"<b>Welcome back!</b>\n\nYou have <b>{docs_remaining}</b> document(s) remaining.\n\nSend me a document to get Turnitin reports!"
-        
-        bot.send_message(user_id, welcome_text)
+
+        safe_send_message(user_id, welcome_text)
     else:
         welcome_text = """<b>Welcome to Turnitin Report Bot!</b>
 
@@ -323,8 +299,8 @@ def send_welcome(message):
 • Support multiple document formats
 
 <b>Choose your subscription plan:</b>"""
-        
-        bot.send_message(
+
+        safe_send_message(
             user_id,
             welcome_text,
             reply_markup=create_main_menu()
@@ -396,15 +372,116 @@ def approve_subscription(message):
 
 📄 Send me a document to get your Turnitin reports!"""
     
-    bot.send_message(request_data["user_id"], user_message)
+    safe_send_message(request_data["user_id"], user_message)
     bot.reply_to(message, f"✅ Subscription approved for user {request_data['user_id']}")
+
+@bot.message_handler(commands=['temp_email'])
+def set_temp_email(message):
+    """Admin command to set temporary email for Turnitin login"""
+    if message.from_user.id != ADMIN_TELEGRAM_ID:
+        return
+
+    try:
+        email = message.text.split(' ', 1)[1]
+
+        # Store email temporarily (will be combined with password later)
+        temp_data = {"temp_email": email}
+        with open("temp_email_storage.json", "w") as f:
+            json.dump(temp_data, f)
+
+        bot.reply_to(message, f"✅ Temporary email set: {email}\n\nNow send: <code>/temp_password your_password</code>")
+
+    except IndexError:
+        bot.reply_to(message, "❌ Usage: /temp_email your_email@example.com")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error setting temporary email: {e}")
+
+@bot.message_handler(commands=['temp_password'])
+def set_temp_password(message):
+    """Admin command to set temporary password for Turnitin login"""
+    if message.from_user.id != ADMIN_TELEGRAM_ID:
+        return
+
+    try:
+        password = message.text.split(' ', 1)[1]
+
+        # Load previously set email
+        email = None
+        if os.path.exists("temp_email_storage.json"):
+            with open("temp_email_storage.json", "r") as f:
+                data = json.load(f)
+                email = data.get("temp_email")
+
+        if not email:
+            bot.reply_to(message, "❌ Please set email first with: <code>/temp_email your_email@example.com</code>")
+            return
+
+        # Save both credentials with expiry
+        from turnitin_auth import save_temp_credentials
+        if save_temp_credentials(email, password):
+            bot.reply_to(message, "✅ <b>Temporary credentials saved!</b>\n\n⏰ Valid for 6 hours\n🔐 Next login will use these credentials")
+
+            # Clean up temporary email storage
+            if os.path.exists("temp_email_storage.json"):
+                os.remove("temp_email_storage.json")
+        else:
+            bot.reply_to(message, "❌ Failed to save temporary credentials")
+
+    except IndexError:
+        bot.reply_to(message, "❌ Usage: /temp_password your_password")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error setting temporary password: {e}")
+
+@bot.message_handler(commands=['clear_temp_creds'])
+def clear_temp_credentials_command(message):
+    """Admin command to clear temporary credentials"""
+    if message.from_user.id != ADMIN_TELEGRAM_ID:
+        return
+
+    try:
+        from turnitin_auth import clear_temp_credentials
+        if clear_temp_credentials():
+            bot.reply_to(message, "✅ Temporary credentials cleared")
+        else:
+            bot.reply_to(message, "❌ No temporary credentials found")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error clearing credentials: {e}")
+
+@bot.message_handler(commands=['check_temp_creds'])
+def check_temp_credentials_command(message):
+    """Admin command to check temporary credentials status"""
+    if message.from_user.id != ADMIN_TELEGRAM_ID:
+        return
+
+    try:
+        from turnitin_auth import load_temp_credentials
+        email, password = load_temp_credentials()
+
+        if email and password:
+            # Load expiry info
+            with open("temp_credentials.json", "r") as f:
+                data = json.load(f)
+                expires_at = datetime.fromisoformat(data.get("expires_at", ""))
+                time_left = expires_at - datetime.now()
+
+            if time_left.total_seconds() > 0:
+                hours_left = int(time_left.total_seconds() // 3600)
+                minutes_left = int((time_left.total_seconds() % 3600) // 60)
+                bot.reply_to(message, f"✅ <b>Active temporary credentials:</b>\n\n📧 Email: {email}\n⏰ Expires in: {hours_left}h {minutes_left}m")
+            else:
+                bot.reply_to(message, "⚠️ Temporary credentials have expired")
+        else:
+            bot.reply_to(message, "❌ No active temporary credentials")
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error checking credentials: {e}")
 
 @bot.message_handler(commands=['edit_subscription'])
 def edit_subscription_command(message):
     """Admin command to edit subscription end date"""
     if message.from_user.id != ADMIN_TELEGRAM_ID:
         return
-    
+
     try:
         parts = message.text.split(' ')
         user_id = parts[1]
@@ -412,24 +489,104 @@ def edit_subscription_command(message):
     except IndexError:
         bot.reply_to(message, "❌ Usage: /edit_subscription [user_id] [YYYY-MM-DD]")
         return
-    
+
     try:
         datetime.strptime(new_end_date, "%Y-%m-%d")
     except ValueError:
         bot.reply_to(message, "❌ Invalid date format. Use YYYY-MM-DD")
         return
-    
+
     subscriptions = load_subscriptions()
-    
+
     if user_id not in subscriptions:
         bot.reply_to(message, "❌ User not found in subscriptions")
         return
-    
+
     # Update end date
     subscriptions[user_id]["end_date"] = f"{new_end_date}T23:59:59"
     save_subscriptions(subscriptions)
-    
+
     bot.reply_to(message, f"✅ Updated subscription end date for user {user_id} to {new_end_date}")
+
+@bot.message_handler(commands=['processor_status'])
+def check_processor_status_command(message):
+    """Admin command to check processor status"""
+    if message.from_user.id != ADMIN_TELEGRAM_ID:
+        return
+
+    try:
+        from queue_processor import get_processor_status
+        from queue_manager import get_pending_items
+
+        status = get_processor_status()
+        pending = get_pending_items()
+
+        status_text = f"""🔧 <b>Queue Processor Status</b>
+
+🟢 <b>Running:</b> {status['is_running']}
+🌐 <b>Browser Active:</b> {status['browser_active']}
+🔄 <b>Failure Count:</b> {status['failure_count']}
+📋 <b>Queue Size:</b> {len(pending)} pending
+
+⏱️ <b>Generated:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
+
+        bot.reply_to(message, status_text)
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error checking processor status: {e}")
+
+@bot.message_handler(commands=['force_stop_processor'])
+def force_stop_processor_command(message):
+    """Admin command to force stop processor"""
+    if message.from_user.id != ADMIN_TELEGRAM_ID:
+        return
+
+    try:
+        from queue_processor import force_stop_processor
+
+        was_running = force_stop_processor()
+
+        if was_running:
+            bot.reply_to(message, "✅ Queue processor force stopped successfully")
+        else:
+            bot.reply_to(message, "ℹ️ Queue processor was not running")
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error stopping processor: {e}")
+
+@bot.message_handler(commands=['start_processor'])
+def start_processor_command(message):
+    """Admin command to manually start processor"""
+    if message.from_user.id != ADMIN_TELEGRAM_ID:
+        return
+
+    try:
+        from queue_processor import start_immediate_processing
+
+        started = start_immediate_processing(bot)
+
+        if started:
+            bot.reply_to(message, "✅ Queue processor started successfully")
+        else:
+            bot.reply_to(message, "ℹ️ Processor already running or no pending documents")
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error starting processor: {e}")
+
+@bot.message_handler(commands=['reset_circuit_breaker'])
+def reset_circuit_breaker_command(message):
+    """Admin command to reset circuit breaker"""
+    if message.from_user.id != ADMIN_TELEGRAM_ID:
+        return
+
+    try:
+        from queue_processor import reset_circuit_breaker
+
+        old_count = reset_circuit_breaker()
+        bot.reply_to(message, f"✅ Circuit breaker reset successfully\n🔄 Cleared {old_count} previous failures")
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error resetting circuit breaker: {e}")
 
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
@@ -479,31 +636,74 @@ def handle_document(message):
     # Process the document
     process_user_document(message)
 
+def start_bot_with_restart():
+    """Start bot with automatic restart on errors"""
+    restart_count = 0
+    max_restarts = 50  # Maximum number of restarts before giving up
+
+    while restart_count < max_restarts:
+        try:
+            log("🤖 Turnitin bot starting...")
+
+            # Start the bot polling
+            bot.infinity_polling(
+                timeout=60,
+                long_polling_timeout=60,
+                restart_on_change=False,
+                none_stop=True  # Continue polling even on errors
+            )
+
+        except KeyboardInterrupt:
+            log("Bot stopped by user (Ctrl+C)")
+            break
+
+        except telebot.apihelper.ApiTelegramException as e:
+            if e.error_code == 403:
+                log(f"Bot blocked by user, continuing polling... (restart #{restart_count + 1})")
+            elif e.error_code == 429:
+                log(f"Rate limited, waiting 30 seconds before restart... (restart #{restart_count + 1})")
+                time.sleep(30)
+            else:
+                log(f"Telegram API error {e.error_code}: {e.description} (restart #{restart_count + 1})")
+
+        except Exception as e:
+            log(f"Polling error: {e} (restart #{restart_count + 1})")
+
+        restart_count += 1
+
+        if restart_count < max_restarts:
+            wait_time = min(10, restart_count * 2)  # Exponential backoff up to 10 seconds
+            log(f"Restarting bot in {wait_time} seconds...")
+            time.sleep(wait_time)
+        else:
+            log(f"Maximum restart attempts ({max_restarts}) reached. Bot stopped.")
+            break
+
+    # Cleanup on exit
+    log("Bot shutting down...")
+    try:
+        shutdown_browser_session()
+        # Force stop processor if running
+        try:
+            from queue_processor import force_stop_processor, cleanup_browser_session
+            force_stop_processor()
+            cleanup_browser_session()
+        except:
+            pass
+    except Exception as cleanup_error:
+        log(f"Error during cleanup: {cleanup_error}")
+    log("Bot shutdown complete")
+
 if __name__ == "__main__":
     # Import and register callback handlers
     from bot_callbacks import register_callback_handlers
-    register_callback_handlers(bot, ADMIN_TELEGRAM_ID, MONTHLY_PLANS, DOCUMENT_PLANS, BANK_DETAILS, 
-                              load_pending_requests, save_pending_requests, load_subscriptions, 
+    register_callback_handlers(bot, ADMIN_TELEGRAM_ID, MONTHLY_PLANS, DOCUMENT_PLANS, BANK_DETAILS,
+                              load_pending_requests, save_pending_requests, load_subscriptions,
                               save_subscriptions, is_user_subscribed, get_user_subscription_info,
                               create_main_menu, create_monthly_plans_menu, create_document_plans_menu,
                               create_admin_menu, processing_queue, log)
-    
-    start_processing_worker()
-    
-    log("🤖 Turnitin bot starting...")
-    
-    try:
-        bot.infinity_polling(
-            timeout=60,
-            long_polling_timeout=60,
-            restart_on_change=False
-        )
-    except Exception as e:
-        log(f"Polling error: {e}")
-    finally:
-        log("Bot shutting down...")
-        shutdown_browser_session()
-        processing_queue.put(None)
-        if processing_thread and processing_thread.is_alive():
-            processing_thread.join(timeout=5)
-        log("Bot shutdown complete")
+
+    # Processor starts automatically when documents are added to queue
+
+    # Start bot with automatic restart capability
+    start_bot_with_restart()

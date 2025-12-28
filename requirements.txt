@@ -3,3 +3,5 @@ pyTelegramBotAPI
 python-dotenv
 python-telegram-bot
 requests
+selenium
+webdriver-manager

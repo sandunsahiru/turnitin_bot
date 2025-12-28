@@ -5,5 +5,7 @@ pending_requests.json
 cookies.json
 processing_queue.json
 pending_retries_queue.json
+temp_credentials.json
+temp_email_storage.json
 __pycache__/turnitin_processor.cpython-312.pyc
 /__pycache__

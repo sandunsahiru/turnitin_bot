@@ -22,20 +22,32 @@ def register_callback_handlers(bot, ADMIN_TELEGRAM_ID, MONTHLY_PLANS, DOCUMENT_P
         
         # User callbacks
         if call.data == "monthly_plans":
-            bot.edit_message_text(
-                "<b>Monthly Subscription Plans</b>\n\nChoose your plan:",
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=create_monthly_plans_menu()
-            )
+            try:
+                bot.edit_message_text(
+                    "<b>Monthly Subscription Plans</b>\n\nChoose your plan:",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=create_monthly_plans_menu()
+                )
+            except Exception as e:
+                if "message is not modified" in str(e):
+                    bot.answer_callback_query(call.id, "Already viewing monthly plans!")
+                else:
+                    log(f"Error editing message: {e}")
         
         elif call.data == "document_plans":
-            bot.edit_message_text(
-                "<b>Document-Based Plans</b>\n\nChoose your plan:",
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=create_document_plans_menu()
-            )
+            try:
+                bot.edit_message_text(
+                    "<b>Document-Based Plans</b>\n\nChoose your plan:",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=create_document_plans_menu()
+                )
+            except Exception as e:
+                if "message is not modified" in str(e):
+                    bot.answer_callback_query(call.id, "Already viewing document plans!")
+                else:
+                    log(f"Error editing message: {e}")
         
         elif call.data == "my_subscription":
             show_user_subscription(call, bot, is_user_subscribed, get_user_subscription_info, 
@@ -55,28 +67,40 @@ def register_callback_handlers(bot, ADMIN_TELEGRAM_ID, MONTHLY_PLANS, DOCUMENT_P
 📊 <b>Reports generated:</b> Similarity + AI Writing
 
 💬 For support, contact: +94702947854"""
-            
+
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("⬅️ Back", callback_data="back_to_main"))
-            
-            bot.edit_message_text(
-                help_text,
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=markup
-            )
+
+            try:
+                bot.edit_message_text(
+                    help_text,
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=markup
+                )
+            except Exception as e:
+                if "message is not modified" in str(e):
+                    bot.answer_callback_query(call.id, "Already viewing help!")
+                else:
+                    log(f"Error editing message: {e}")
         
         elif call.data == "back_to_main":
             welcome_text = """🤖 <b>Turnitin Report Bot</b>
 
 💳 <b>Choose your subscription plan:</b>"""
-            
-            bot.edit_message_text(
-                welcome_text,
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=create_main_menu()
-            )
+
+            try:
+                bot.edit_message_text(
+                    welcome_text,
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=create_main_menu()
+                )
+            except Exception as e:
+                if "message is not modified" in str(e):
+                    bot.answer_callback_query(call.id, "Already at main menu!")
+                else:
+                    log(f"Error editing message: {e}")
         
         elif call.data.startswith("request_monthly_"):
             plan_id = call.data.replace("request_monthly_", "")
@@ -92,14 +116,18 @@ def show_user_subscription(call, bot, is_user_subscribed, get_user_subscription_
     """Show user's current subscription details"""
     user_id = call.from_user.id
     is_subscribed, sub_type = is_user_subscribed(user_id)
-    
+
     if not is_subscribed:
-        bot.edit_message_text(
-            "❌ <b>No Active Subscription</b>\n\nYou don't have an active subscription. Please choose a plan:",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=create_main_menu()
-        )
+        try:
+            bot.edit_message_text(
+                "❌ <b>No Active Subscription</b>\n\nYou don't have an active subscription. Please choose a plan:",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=create_main_menu()
+            )
+        except Exception as e:
+            if "message is not modified" in str(e):
+                bot.answer_callback_query(call.id, "No subscription found!")
         return
     
     user_info = get_user_subscription_info(user_id)
@@ -131,13 +159,19 @@ def show_user_subscription(call, bot, is_user_subscribed, get_user_subscription_
     
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("⬅️ Back", callback_data="back_to_main"))
-    
-    bot.edit_message_text(
-        subscription_text,
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=markup
-    )
+
+    try:
+        bot.edit_message_text(
+            subscription_text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=markup
+        )
+    except Exception as e:
+        if "message is not modified" in str(e):
+            bot.answer_callback_query(call.id, "Already viewing subscription!")
+        else:
+            print(f"Error editing subscription message: {e}")
 
 def handle_monthly_request(call, plan_id, bot, ADMIN_TELEGRAM_ID, MONTHLY_PLANS, BANK_DETAILS,
                           load_pending_requests, save_pending_requests):
@@ -176,13 +210,21 @@ def handle_monthly_request(call, plan_id, bot, ADMIN_TELEGRAM_ID, MONTHLY_PLANS,
 
 ✅ Your request has been sent to admin for approval.
 📧 You'll be notified once approved."""
-    
-    bot.edit_message_text(
-        user_message,
-        call.message.chat.id,
-        call.message.message_id
-    )
-    
+
+    try:
+        bot.edit_message_text(
+            user_message,
+            call.message.chat.id,
+            call.message.message_id
+        )
+        bot.answer_callback_query(call.id, "Monthly subscription request submitted!")
+    except Exception as e:
+        if "message is not modified" in str(e):
+            bot.answer_callback_query(call.id, "Request already submitted!")
+        else:
+            print(f"Error editing monthly request message: {e}")
+            bot.answer_callback_query(call.id, "Request submitted!")
+
     # Notify admin
     admin_message = f"""📢 <b>New Subscription Request</b>
 
@@ -233,13 +275,21 @@ def handle_document_request(call, plan_id, bot, ADMIN_TELEGRAM_ID, DOCUMENT_PLAN
 
 ✅ Your request has been sent to admin for approval.
 📧 You'll be notified once approved."""
-    
-    bot.edit_message_text(
-        user_message,
-        call.message.chat.id,
-        call.message.message_id
-    )
-    
+
+    try:
+        bot.edit_message_text(
+            user_message,
+            call.message.chat.id,
+            call.message.message_id
+        )
+        bot.answer_callback_query(call.id, "Document subscription request submitted!")
+    except Exception as e:
+        if "message is not modified" in str(e):
+            bot.answer_callback_query(call.id, "Request already submitted!")
+        else:
+            print(f"Error editing document request message: {e}")
+            bot.answer_callback_query(call.id, "Request submitted!")
+
     # Notify admin
     admin_message = f"""📢 <b>New Document Subscription Request</b>
 
@@ -268,12 +318,18 @@ def handle_admin_callbacks(call, bot, ADMIN_TELEGRAM_ID, load_subscriptions,
     elif call.data == "admin_bot_stats":
         show_bot_stats(call, bot, create_admin_menu)
     elif call.data == "back_to_admin":
-        bot.edit_message_text(
-            "<b>Admin Panel</b>\n\nWelcome admin! Choose an option:",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=create_admin_menu()
-        )
+        try:
+            bot.edit_message_text(
+                "<b>Admin Panel</b>\n\nWelcome admin! Choose an option:",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=create_admin_menu()
+            )
+        except Exception as e:
+            if "message is not modified" in str(e):
+                bot.answer_callback_query(call.id, "Already at admin panel!")
+            else:
+                print(f"Error editing admin message: {e}")
 
 def show_all_subscriptions(call, bot, load_subscriptions, create_admin_menu):
     """Show all active subscriptions to admin"""
@@ -282,12 +338,16 @@ def show_all_subscriptions(call, bot, load_subscriptions, create_admin_menu):
     if not subscriptions:
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
-        bot.edit_message_text(
-            "📋 <b>No Active Subscriptions</b>",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=markup
-        )
+        try:
+            bot.edit_message_text(
+                "📋 <b>No Active Subscriptions</b>",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=markup
+            )
+        except Exception as e:
+            if "message is not modified" in str(e):
+                bot.answer_callback_query(call.id, "No subscriptions found!")
         return
     
     subscription_text = "👥 <b>Active Subscriptions</b>\n\n"
@@ -346,16 +406,19 @@ def show_pending_requests(call, bot, load_pending_requests, create_admin_menu):
         reply_markup=markup
     )
 
-def show_admin_stats(call, bot, load_subscriptions, load_pending_requests, 
+def show_admin_stats(call, bot, load_subscriptions, load_pending_requests,
                     processing_queue, create_admin_menu):
     """Show admin statistics"""
     subscriptions = load_subscriptions()
     pending_requests = load_pending_requests()
-    
+
     active_monthly = 0
     active_document = 0
     total_pending = len([r for r in pending_requests.values() if r["status"] == "pending"])
-    queue_size = processing_queue.qsize()
+    # Get queue size from queue manager
+    queue_data = processing_queue()  # Call the load_queue function
+    queue_size = len(queue_data.get("queue", []))
+    pending_queue = len([item for item in queue_data.get("queue", []) if item.get("status") == "pending"])
     
     for user_data in subscriptions.values():
         if "end_date" in user_data:
@@ -370,8 +433,9 @@ def show_admin_stats(call, bot, load_subscriptions, load_pending_requests,
 
 📅 <b>Active Monthly Subscriptions:</b> {active_monthly}
 📄 <b>Active Document Subscriptions:</b> {active_document}
-⏳ <b>Pending Requests:</b> {total_pending}
-📄 <b>Processing Queue:</b> {queue_size} documents
+⏳ <b>Pending Payment Requests:</b> {total_pending}
+📄 <b>Total Queue Items:</b> {queue_size}
+🔄 <b>Pending Processing:</b> {pending_queue}
 👥 <b>Total Users in System:</b> {len(subscriptions)}
 
 📈 <b>Generated:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
@@ -389,7 +453,9 @@ def show_admin_stats(call, bot, load_subscriptions, load_pending_requests,
 def show_processing_queue(call, bot, processing_queue, create_admin_menu):
     """Show current processing queue to admin"""
     import os
-    queue_list = list(processing_queue.queue)
+    # Get queue data from queue manager
+    queue_data = processing_queue()  # Call the load_queue function
+    queue_list = queue_data.get("queue", [])
     
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("⬅️ Back", callback_data="back_to_admin"))
@@ -407,10 +473,10 @@ def show_processing_queue(call, bot, processing_queue, create_admin_menu):
     
     for i, item in enumerate(queue_list[:10]):  # Show first 10 items
         status = item.get('status', 'pending')
-        queue_text += f"{i+1}. User ID: {item['user_id']}\n"
-        queue_text += f"   File: {os.path.basename(item['file_path'])}\n"
+        queue_text += f"{i+1}. User ID: {item.get('user_id', 'Unknown')}\n"
+        queue_text += f"   File: {os.path.basename(item.get('file_path', 'Unknown'))}\n"
         queue_text += f"   Status: {status}\n"
-        queue_text += f"   Added: {item.get('added_time', 'Unknown')}\n\n"
+        queue_text += f"   Added: {item.get('timestamp', 'Unknown')}\n\n"
     
     if len(queue_list) > 10:
         queue_text += f"... and {len(queue_list) - 10} more items"

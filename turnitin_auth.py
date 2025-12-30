@@ -8,6 +8,14 @@ from datetime import datetime
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
+# Fix for "Playwright Sync API inside asyncio loop" error
+# This allows Playwright sync API to work even when called from async contexts
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    pass  # nest_asyncio not installed, will handle below
+
 # Global browser session lock for thread safety
 browser_lock = threading.Lock()
 
@@ -15,8 +23,10 @@ browser_lock = threading.Lock()
 load_dotenv()
 TURNITIN_EMAIL = os.getenv("TURNITIN_EMAIL")
 TURNITIN_PASSWORD = os.getenv("TURNITIN_PASSWORD")
+WEBSHARE_API_TOKEN = os.getenv("WEBSHARE_API_TOKEN")
 
-# Removed proxy configuration - direct connection for better stealth
+# Proxy configuration
+proxy_config = None  # Will be fetched from Webshare if token is provided
 
 # Global browser session
 browser_session = {
@@ -112,6 +122,99 @@ def random_wait(min_seconds=2, max_seconds=4):
         base_wait -= micro_pause
 
     time.sleep(max(0.1, base_wait))
+
+def get_webshare_proxy():
+    """Fetch a working proxy from Webshare API"""
+    global proxy_config
+    
+    if not WEBSHARE_API_TOKEN:
+        log("No WEBSHARE_API_TOKEN found - using direct connection")
+        return None
+    
+    try:
+        # Fetch proxy list from Webshare API
+        url = "https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page=1&page_size=25"
+        headers = {"Authorization": f"Token {WEBSHARE_API_TOKEN}"}
+        
+        log("Fetching proxies from Webshare...")
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        proxies = data.get("results", [])
+        
+        if not proxies:
+            log("✗ No proxies available in your Webshare account")
+            return None
+        
+        log(f"✓ Found {len(proxies)} proxies from Webshare")
+        
+        # Test only first 5 proxies for faster startup
+        # If none work, fall back to direct connection
+        proxies_to_test = proxies[:5]
+        log(f"Testing first {len(proxies_to_test)} proxies...")
+        
+        # Test each proxy until we find a working one
+        for proxy in proxies_to_test:
+            proxy_address = proxy.get("proxy_address")
+            proxy_port = proxy.get("port")
+            username = proxy.get("username")
+            password = proxy.get("password")
+            
+            if not all([proxy_address, proxy_port, username, password]):
+                continue
+            
+            # Format proxy for Playwright
+            proxy_cfg = {
+                "server": f"http://{proxy_address}:{proxy_port}",
+                "username": username,
+                "password": password
+            }
+            
+            # Test the proxy
+            log(f"Testing proxy: {proxy_address}:{proxy_port}...")
+            if test_proxy(proxy_cfg):
+                log(f"✓ Proxy working: {proxy_address}:{proxy_port}")
+                proxy_config = proxy_cfg
+                return proxy_cfg
+            else:
+                log(f"✗ Proxy failed: {proxy_address}:{proxy_port}")
+        
+        log("✗ No working proxies found")
+        return None
+        
+    except requests.exceptions.RequestException as e:
+        log(f"✗ Error fetching proxies from Webshare: {e}")
+        return None
+    except Exception as e:
+        log(f"✗ Unexpected error: {e}")
+        return None
+
+def test_proxy(proxy_cfg):
+    """Test if a proxy works by making a request to Webshare test endpoint"""
+    try:
+        # Test with Webshare's own test endpoint (faster and more reliable)
+        proxies = {
+            "http": f"http://{proxy_cfg['username']}:{proxy_cfg['password']}@{proxy_cfg['server'].replace('http://', '')}",
+            "https": f"http://{proxy_cfg['username']}:{proxy_cfg['password']}@{proxy_cfg['server'].replace('http://', '')}"
+        }
+        
+        # Use Webshare's test endpoint instead of Turnitin
+        response = requests.get(
+            "https://ipv4.webshare.io/",
+            proxies=proxies,
+            timeout=10
+        )
+        
+        # Check if we got a successful response
+        if response.status_code == 200:
+            return True
+        return False
+        
+    except Exception as e:
+        # Log the actual error for debugging
+        log(f"  Proxy test error: {str(e)[:50]}")
+        return False
 
 def human_like_typing(page, selector, text, delay_range=(0.05, 0.2)):
     """Type text with human-like delays between characters"""
@@ -295,9 +398,18 @@ def get_or_create_browser_session():
                         session_age_hours = (datetime.now() - session_start).total_seconds() / 3600
 
                     session_count = browser_session.get('session_count', 0)
-
-                    if session_count >= 10 or session_age_hours >= 2:
-                        log(f"Session refresh needed (uses: {session_count}, age: {session_age_hours:.1f}h)")
+                    
+                    # Check idle time - force refresh if idle for 30+ minutes
+                    idle_minutes = 0
+                    if browser_session.get('last_activity'):
+                        last_activity = browser_session['last_activity']
+                        if isinstance(last_activity, str):
+                            last_activity = datetime.fromisoformat(last_activity)
+                        idle_minutes = (datetime.now() - last_activity).total_seconds() / 60
+                    
+                    # Force refresh if: 10+ uses, 2+ hours old, OR 30+ minutes idle
+                    if session_count >= 10 or session_age_hours >= 2 or idle_minutes >= 30:
+                        log(f"Session refresh needed (uses: {session_count}, age: {session_age_hours:.1f}h, idle: {idle_minutes:.1f}m)")
                         log("Refreshing browser session to clear cache...")
                         cleanup_browser_session()
                         # Will create new session below
@@ -324,9 +436,16 @@ def get_or_create_browser_session():
                     log("Forcing complete session reset without cleanup (cross-thread operation not allowed)")
                     # Force reset without trying to close (which would fail cross-thread)
                     force_reset_browser_session()
+                # Check if event loop is closed (Playwright stopped)
+                elif "event loop is closed" in error_msg.lower() or "playwright already stopped" in error_msg.lower():
+                    log(f"Playwright event loop closed: {e}")
+                    log("Forcing complete session reset (event loop stopped)")
+                    force_reset_browser_session()
+                # Any other browser error - force complete reset
                 else:
-                    log(f"Existing session invalid: {e}, creating new session")
-                    cleanup_browser_session()
+                    log(f"Browser error detected: {e}")
+                    log("Forcing complete session reset to recover from stale session")
+                    force_reset_browser_session()
 
         # CRITICAL: If session belongs to a different thread, check if it's still active
         # Don't immediately reset - try to preserve the session
@@ -399,7 +518,12 @@ def get_or_create_browser_session():
                 ]
             }
 
-            log("Using direct connection for maximum stealth (no proxy)")
+            # Fetch and test proxy from Webshare if token is provided
+            proxy = get_webshare_proxy()
+            if proxy:
+                log(f"Using Webshare proxy: {proxy['server']}")
+            else:
+                log("Using direct connection (no proxy)")
 
             # Launch browser with stealth configuration
             browser_session['browser'] = browser_session['playwright'].chromium.launch(**launch_options)
@@ -428,6 +552,11 @@ def get_or_create_browser_session():
                 # Device scale factor for more realistic fingerprint
                 'device_scale_factor': random.choice([1, 1.25, 1.5, 2])
             }
+            
+            # Add proxy configuration if available
+            if proxy:
+                context_options['proxy'] = proxy
+                log(f"Proxy configured in context: {proxy['server']}")
 
             log(f"Browser configured with User-Agent: {selected_user_agent[:50]}...")
             log(f"Viewport: {selected_resolution['width']}x{selected_resolution['height']}")

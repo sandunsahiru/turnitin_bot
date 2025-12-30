@@ -398,7 +398,7 @@ def download_similarity_report_new(page1, queue_item):
                     if sim_button.count() > 0:
                         # Try to click and download
                         try:
-                            with page1.expect_download(timeout=30000) as download_info:
+                            with page1.expect_download(timeout=60000) as download_info:  # Increased to 60s
                                 sim_button.click(timeout=5000)
                                 log(f"✓ Similarity Report button clicked with selector: {selector}")
 
@@ -412,7 +412,7 @@ def download_similarity_report_new(page1, queue_item):
                         except Exception as click_error:
                             # Try force click
                             try:
-                                with page1.expect_download(timeout=30000) as download_info:
+                                with page1.expect_download(timeout=60000) as download_info:  # Increased to 60s
                                     sim_button.click(force=True, timeout=5000)
                                     log(f"✓ Similarity Report button clicked (forced) with selector: {selector}")
 
@@ -507,6 +507,10 @@ def download_ai_report_new(page1, queue_item):
             return None
 
         random_wait(2, 3)
+        
+        # CRITICAL: Wait for menu to fully open before trying to click AI report button
+        time.sleep(3)  # Extra wait to ensure menu is fully visible
+        log("✓ Download menu reopened, waiting for menu to stabilize...")
 
         # Poll for AI Writing Report button (10-second intervals, up to 1 minute)
         ai_button_attempts = 6
@@ -528,7 +532,7 @@ def download_ai_report_new(page1, queue_item):
                     ai_button = page1.locator(selector).first
                     if ai_button.count() > 0:
                         try:
-                            with page1.expect_download(timeout=30000) as download_info:
+                            with page1.expect_download(timeout=60000) as download_info:  # Increased to 60s
                                 ai_button.click(timeout=5000)
                                 log(f"✓ AI Writing Report button clicked with selector: {selector}")
 
@@ -541,7 +545,7 @@ def download_ai_report_new(page1, queue_item):
                             
                         except Exception as click_error:
                             try:
-                                with page1.expect_download(timeout=30000) as download_info:
+                                with page1.expect_download(timeout=60000) as download_info:  # Increased to 60s
                                     ai_button.click(force=True, timeout=5000)
                                     log(f"✓ AI Writing Report button clicked (forced) with selector: {selector}")
 
@@ -574,34 +578,62 @@ def download_ai_report_new(page1, queue_item):
         return None
 
 def send_reports_to_user_queue(chat_id, sim_filename, ai_filename, bot, queue_item):
-    """Send downloaded reports to Telegram user"""
+    """Send downloaded reports to Telegram user with automatic retry on failure"""
+    max_retries = 3
+    retry_delay = 5  # seconds
+    
+    def send_with_retry(send_func, description):
+        """Helper function to retry sending with delays"""
+        for attempt in range(1, max_retries + 1):
+            try:
+                send_func()
+                log(f"✓ {description} (attempt {attempt}/{max_retries})")
+                return True
+            except Exception as e:
+                if attempt < max_retries:
+                    log(f"⚠️ {description} failed (attempt {attempt}/{max_retries}): {e}")
+                    log(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    log(f"✗ {description} failed after {max_retries} attempts: {e}")
+                    return False
+        return False
+    
     try:
         title = queue_item.get("submission_title", "Unknown")
         sim_score = queue_item.get("similarity_score", "N/A")
         
-        # Send similarity report
+        # Send similarity report with retry
         if sim_filename and os.path.exists(sim_filename):
-            with open(sim_filename, "rb") as sim_file:
-                bot.send_document(
-                    chat_id, 
-                    sim_file, 
-                    caption=f"📄 Similarity Report\n📋 Title: {title}\n🎯 Score: {sim_score}"
-                )
-            log(f"✓ Sent Similarity Report to {chat_id}")
+            def send_sim():
+                with open(sim_filename, "rb") as sim_file:
+                    bot.send_document(
+                        chat_id, 
+                        sim_file, 
+                        caption=f"📄 Similarity Report\n📋 Title: {title}\n🎯 Score: {sim_score}"
+                    )
+            
+            send_with_retry(send_sim, f"Sent Similarity Report to {chat_id}")
         
-        # Send AI report
+        
+        # Send AI report with retry
         if ai_filename and os.path.exists(ai_filename):
-            with open(ai_filename, "rb") as ai_file:
-                bot.send_document(
-                    chat_id, 
-                    ai_file, 
-                    caption=f"🤖 AI Writing Report\n📋 Title: {title}"
-                )
-            log(f"✓ Sent AI Report to {chat_id}")
+            def send_ai():
+                with open(ai_filename, "rb") as ai_file:
+                    bot.send_document(
+                        chat_id, 
+                        ai_file, 
+                        caption=f"🤖 AI Writing Report\n📋 Title: {title}"
+                    )
+            
+            send_with_retry(send_ai, f"Sent AI Report to {chat_id}")
         
-        # Send completion message
+        # Send completion message with retry
         if sim_filename and ai_filename:
-            bot.send_message(chat_id, "✅ <b>Reports Delivered!</b>\n\n📊 Both reports sent successfully!", parse_mode="HTML")
+            def send_completion():
+                bot.send_message(chat_id, "✅ <b>Reports Delivered!</b>\n\n📊 Both reports sent successfully!", parse_mode="HTML")
+            
+            send_with_retry(send_completion, "Sent completion message")
         
         # Cleanup downloaded report files
         if sim_filename and os.path.exists(sim_filename):

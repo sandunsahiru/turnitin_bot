@@ -1,7 +1,8 @@
 playwright
 pyTelegramBotAPI
 python-dotenv
-python-telegram-bot
 requests
 selenium
 webdriver-manager
+python-telegram-bot
+nest-asyncio

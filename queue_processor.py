@@ -107,47 +107,91 @@ def cleanup_if_idle(bot):
         if removed > 0:
             log(f"Cleaned up {removed} completed items from queue")
 
-        # Check for submitted items needing reports
+        # Get current queue state
+        pending_items = get_pending_items()
         submitted_items = get_submitted_items()
+
+        # SMART PRIORITY LOGIC:
+        # 1. If there are submitted items from CURRENT batch (just uploaded) → download their reports first
+        # 2. Then upload any NEW pending items
+        # 3. Then poll for reports on newly uploaded items
+
+        # Check if we have submitted items that were just uploaded (within last 2 minutes)
+        recent_submissions = []
+        old_submissions = []
         if submitted_items:
-            log(f"Found {len(submitted_items)} submitted items needing reports")
+            from datetime import datetime, timedelta
+            now = datetime.now()
+            for item in submitted_items:
+                submitted_at = item.get('submitted_at')
+                if submitted_at:
+                    try:
+                        submit_time = datetime.fromisoformat(submitted_at)
+                        age_minutes = (now - submit_time).total_seconds() / 60
+                        if age_minutes < 2:  # Submitted within last 2 minutes
+                            recent_submissions.append(item)
+                        else:
+                            old_submissions.append(item)
+                    except:
+                        old_submissions.append(item)
+                else:
+                    old_submissions.append(item)
+
+        # PRIORITY 1: Download reports for RECENT submissions (current batch)
+        if recent_submissions:
+            log(f"Found {len(recent_submissions)} recently submitted items, downloading their reports first")
             processor_state["is_running"] = True
             try:
                 from turnitin_processor_batch import download_pending_reports
-                success = download_pending_reports(bot, submitted_items)
+                success = download_pending_reports(bot, recent_submissions)
                 if success:
-                    log("Report downloading completed successfully")
+                    log("Recent batch reports downloaded successfully")
                 else:
-                    log("Report downloading failed")
+                    log("Recent batch report download failed")
             finally:
                 processor_state["is_running"] = False
-                # Check again for more work after downloading reports
+                # Check again after downloading
                 cleanup_if_idle(bot)
             return
 
-        # Check for new pending items
-        pending_items = get_pending_items()
+        # PRIORITY 2: Upload NEW pending items (before polling old submissions)
         if pending_items:
-            log(f"Found {len(pending_items)} new pending items, starting another batch")
-            # Automatically start processing new batch
+            log(f"Found {len(pending_items)} new pending items, uploading them now")
             processor_state["is_running"] = True
             try:
                 from turnitin_processor_batch import process_dynamic_batch_documents
                 success = process_dynamic_batch_documents(bot)
                 if success:
-                    log("New batch processing completed successfully")
+                    log("New batch uploaded successfully")
                     processor_state["failure_count"] = 0
                 else:
-                    log("New batch processing failed")
+                    log("New batch upload failed")
                     processor_state["failure_count"] += 1
                     processor_state["last_failure_time"] = datetime.now().isoformat()
             except Exception as e:
-                log(f"Error processing new batch: {e}")
+                log(f"Error uploading new batch: {e}")
                 processor_state["failure_count"] += 1
                 processor_state["last_failure_time"] = datetime.now().isoformat()
             finally:
                 processor_state["is_running"] = False
-                # Recursively check again for more items
+                # Check again after upload
+                cleanup_if_idle(bot)
+            return
+
+        # PRIORITY 3: Poll for reports on OLD submissions (only if no new uploads)
+        if old_submissions:
+            log(f"Found {len(old_submissions)} old submitted items, polling for their reports")
+            processor_state["is_running"] = True
+            try:
+                from turnitin_processor_batch import download_pending_reports
+                success = download_pending_reports(bot, old_submissions)
+                if success:
+                    log("Old submission reports downloaded successfully")
+                else:
+                    log("Old submission report download failed")
+            finally:
+                processor_state["is_running"] = False
+                # Check again after polling
                 cleanup_if_idle(bot)
             return
 
